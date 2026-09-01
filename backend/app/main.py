@@ -8,6 +8,7 @@ retrieval.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -15,6 +16,7 @@ import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import asyncpg
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -102,16 +104,9 @@ def _parse_citations(raw: str | None) -> list[dict] | None:
     return json.loads(raw) if raw else None
 
 
-@app.post("/api/chat")
-async def chat(body: ChatRequest):
-    """Wires the bare agent loop (app/agent.py) into the API, now with
-    server-side session storage (PLAN.md feature priority #6): every turn
-    is persisted as a `messages` row pair + an `events` analytics row, and
-    prior turns in the same session are replayed into the agent loop as
-    history. Still no trim/summarize policy (priority #5) - the full
-    history is replayed every turn."""
-    pool = await get_pool()
-
+async def _resolve_session(pool: asyncpg.Pool, body: ChatRequest) -> tuple[str, int | None]:
+    """Shared by /api/chat and /api/chat/stream: find-or-create the session
+    for this request, return (session_id, video_id)."""
     if body.session_id is not None:
         session = await queries.get_session(pool, str(body.session_id))
         if session is None:
@@ -125,8 +120,23 @@ async def chat(body: ChatRequest):
                 raise HTTPException(404, "video not found")
             video_id = video["id"]
         session = await queries.create_session(pool, video_id)
+    return str(session["id"]), video_id
 
-    session_id = str(session["id"])
+
+@app.post("/api/chat")
+async def chat(body: ChatRequest):
+    """Wires the bare agent loop (app/agent.py) into the API, now with
+    server-side session storage (PLAN.md feature priority #6): every turn
+    is persisted as a `messages` row pair + an `events` analytics row, and
+    prior turns in the same session are replayed into the agent loop as
+    history. Still no trim/summarize policy (priority #5) - the full
+    history is replayed every turn.
+
+    One-shot: the client gets nothing until the whole turn (every tool
+    call + the final answer) is done. See POST /api/chat/stream below for
+    the version that renders tool calls as they happen."""
+    pool = await get_pool()
+    session_id, video_id = await _resolve_session(pool, body)
 
     history_rows = await queries.list_messages(pool, session_id)
     history = [{"role": r["role"], "content": r["content"]} for r in history_rows]
@@ -154,6 +164,101 @@ async def chat(body: ChatRequest):
         "citations": result.citations,
         "trace": result.trace,
     }
+
+
+def _sse(event: str, data: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+
+@app.post("/api/chat/stream")
+async def chat_stream(body: ChatRequest):
+    """Same turn as POST /api/chat, but as Server-Sent Events so the
+    frontend can render each tool call the moment it starts/finishes
+    instead of waiting for the whole agent loop to land at once.
+
+    Event types, in order, zero or more `tool_call`/`tool_result` pairs
+    (one per real tool the model calls) followed by exactly one of
+    `final` or `error`:
+      - `tool_call`   {call_id, tool, args}
+      - `tool_result` {call_id, tool, result}
+      - `final`       {session_id, message_id, answer, citations, trace}
+      - `error`       {error}
+
+    Session lookup/creation happens before streaming starts (so a bad
+    session_id still 404s normally); persistence happens after the agent
+    loop finishes, same as /api/chat, right before the `final` event.
+    """
+    pool = await get_pool()
+    session_id, video_id = await _resolve_session(pool, body)
+
+    history_rows = await queries.list_messages(pool, session_id)
+    history = [{"role": r["role"], "content": r["content"]} for r in history_rows]
+
+    queue: asyncio.Queue[dict] = asyncio.Queue()
+
+    async def emit(event: dict) -> None:
+        await queue.put(event)
+
+    async def run_turn() -> None:
+        # Whatever goes wrong here, event_gen() below is blocked on
+        # queue.get() waiting for exactly one final/error item - guarantee
+        # one gets sent, or the SSE stream just hangs open forever.
+        started = time.monotonic()
+        try:
+            result = await agent.run(
+                pool, body.message, video_id=video_id, history=history, emit=emit
+            )
+            latency_ms = int((time.monotonic() - started) * 1000)
+            persisted = await queries.record_turn(
+                pool,
+                session_id=session_id,
+                video_id=video_id,
+                user_message=body.message,
+                answer=result.answer,
+                citations=result.citations,
+                trace=result.trace,
+                usage=result.usage,
+                latency_ms=latency_ms,
+            )
+        except Exception as exc:  # noqa: BLE001 - surface to the client, not a 500 mid-stream
+            log.exception("agent turn failed")
+            await queue.put({"type": "error", "error": str(exc)})
+            return
+
+        await queue.put(
+            {
+                "type": "final",
+                "session_id": session_id,
+                "message_id": persisted["message_id"],
+                "answer": result.answer,
+                "citations": result.citations,
+                "trace": result.trace,
+            }
+        )
+
+    async def event_gen():
+        task = asyncio.create_task(run_turn())
+        try:
+            while True:
+                item = await queue.get()
+                event_type = item.pop("type")
+                yield _sse(event_type, item)
+                if event_type in ("final", "error"):
+                    break
+        finally:
+            # Make sure a client disconnect (or the break above) doesn't
+            # leave run_turn() as an orphaned task still writing to the DB
+            # unsupervised - either it's already done (no-op) or it's
+            # cancelled cleanly.
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream",
+        headers={"cache-control": "no-cache", "x-accel-buffering": "no"},
+    )
 
 
 @app.get("/api/sessions/{session_id}")

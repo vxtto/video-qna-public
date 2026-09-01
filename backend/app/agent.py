@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+from typing import Awaitable, Callable
 
 import asyncpg
 
@@ -18,6 +19,13 @@ from . import queries, tools
 from .openrouter import chat
 
 log = logging.getLogger("agent")
+
+# Called with one event dict per tool call, in real time, so a caller (the
+# /api/chat/stream SSE endpoint) can push them to the frontend as they
+# happen instead of only after the whole turn finishes. See
+# PLAN.md/feature "tool calls rendered in real time". Optional - the
+# one-shot /api/chat endpoint and app/cli.py just don't pass one.
+EmitFn = Callable[[dict], Awaitable[None]]
 
 MAX_TURNS = 6  # hard stop so a confused model can't loop forever
 
@@ -63,6 +71,7 @@ async def run(
     *,
     video_id: int | None = None,
     history: list[dict] | None = None,
+    emit: EmitFn | None = None,
 ) -> AgentResult:
     """Run one turn of the agent loop.
 
@@ -71,7 +80,10 @@ async def run(
     prior turns' messages (already OpenAI-shaped) for multi-turn sessions;
     context-management policy (trim/summarize per CLAUDE.md risk #2) is
     intentionally NOT in this bare loop yet - out of scope for the local
-    functionality test, see CLAUDE.md open questions.
+    functionality test, see CLAUDE.md open questions. `emit`, if given, is
+    awaited with a `{"type": ..., ...}` event right as each real tool call
+    starts and finishes, for real-time streaming to the frontend - the
+    return value here is still the complete AgentResult either way.
     """
     messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
     messages.extend(history or [])
@@ -113,6 +125,11 @@ async def run(
                     usage_totals,
                 )
 
+            if emit:
+                await emit(
+                    {"type": "tool_call", "call_id": call["id"], "tool": fn_name, "args": args}
+                )
+
             try:
                 tool_result = await tools.dispatch(
                     db, fn_name, args, default_video_id=video_id
@@ -120,6 +137,16 @@ async def run(
             except Exception as exc:  # noqa: BLE001 - surface to the model, not a crash
                 log.exception("tool %s failed", fn_name)
                 tool_result = {"error": str(exc)}
+
+            if emit:
+                await emit(
+                    {
+                        "type": "tool_result",
+                        "call_id": call["id"],
+                        "tool": fn_name,
+                        "result": tool_result,
+                    }
+                )
 
             trace.append({"tool": fn_name, "args": args, "result": tool_result})
             messages.append(

@@ -147,13 +147,15 @@ picker.addEventListener("change", () => loadVideo(picker.value));
 loadVideoList();
 
 // --- agent test console -----------------------------------------------
-// Bare-bones chat UI against POST /api/chat, for exercising the real
-// agent loop (app/agent.py) from the browser instead of curl/app.cli.
-// Renders the answer, clickable citation timestamps (seek the <video>),
-// and the raw tool-call trace for debugging. This backend has server-side
-// sessions (PLAN.md feature priority #6): the first call omits session_id
-// and the response hands one back, which subsequent calls replay so the
-// agent sees real conversation history instead of resetting every turn.
+// Bare-bones chat UI against POST /api/chat/stream, for exercising the
+// real agent loop (app/agent.py) from the browser instead of curl/app.cli.
+// Renders tool calls as they happen (SSE `tool_call`/`tool_result` events -
+// see main.py's /api/chat/stream), then the final answer, clickable
+// citation timestamps (seek the <video>), and the raw tool-call trace for
+// debugging. This backend has server-side sessions (PLAN.md feature
+// priority #6): the first call omits session_id and the response hands
+// one back, which subsequent calls replay so the agent sees real
+// conversation history instead of resetting every turn.
 
 const chatLog = document.getElementById("chat-log");
 const chatForm = document.getElementById("chat-form");
@@ -174,30 +176,74 @@ chatForm.addEventListener("submit", async (e) => {
   chatInput.disabled = true;
 
   appendChatEntry("user", message);
-  const pending = appendChatEntry("agent", "…thinking");
+  const agentEntry = appendAgentEntry();
 
   try {
-    const res = await fetch("/api/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+    await streamChat(
+      {
         message,
         video_slug: currentVideo ? currentVideo.slug : null,
         session_id: chatSessionId,
-      }),
-    });
-    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-    const result = await res.json();
-    chatSessionId = result.session_id || chatSessionId;
-    renderAgentReply(pending, result);
+      },
+      {
+        tool_call: (evt) => addToolCallChip(agentEntry, evt),
+        tool_result: (evt) => resolveToolCallChip(agentEntry, evt),
+        final: (evt) => {
+          chatSessionId = evt.session_id || chatSessionId;
+          renderAgentFinal(agentEntry, evt);
+        },
+        error: (evt) => {
+          agentEntry.li.classList.add("error");
+          agentEntry.bubble.textContent = `error: ${evt.error}`;
+        },
+      }
+    );
   } catch (err) {
-    pending.classList.add("error");
-    pending.querySelector(".bubble").textContent = `error: ${err.message}`;
+    agentEntry.li.classList.add("error");
+    agentEntry.bubble.textContent = `error: ${err.message}`;
   } finally {
     chatInput.disabled = false;
     chatInput.focus();
   }
 });
+
+// Reads a `text/event-stream` response body (POST, so no plain
+// EventSource - it can't send a JSON body) and dispatches each event to
+// `handlers[eventType](data)` as soon as it arrives, not after the whole
+// response finishes.
+async function streamChat(body, handlers) {
+  const res = await fetch("/api/chat/stream", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok || !res.body) throw new Error(`${res.status} ${res.statusText}`);
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+
+    let sep;
+    while ((sep = buf.indexOf("\n\n")) >= 0) {
+      const raw = buf.slice(0, sep);
+      buf = buf.slice(sep + 2);
+
+      let eventType = "message";
+      let data = "";
+      for (const line of raw.split("\n")) {
+        if (line.startsWith("event:")) eventType = line.slice(6).trim();
+        else if (line.startsWith("data:")) data += line.slice(5).trim();
+      }
+      if (!data) continue;
+      handlers[eventType]?.(JSON.parse(data));
+    }
+  }
+}
 
 function appendChatEntry(role, text) {
   const li = document.createElement("li");
@@ -211,8 +257,67 @@ function appendChatEntry(role, text) {
   return li;
 }
 
-function renderAgentReply(li, result) {
-  li.querySelector(".bubble").textContent = result.answer || "(empty answer)";
+// Agent replies get a `.tool-calls` slot above the bubble, so tool-call
+// chips can be appended/updated live before the final answer text lands.
+function appendAgentEntry() {
+  const li = document.createElement("li");
+  li.className = "chat-entry agent";
+  const toolCalls = document.createElement("div");
+  toolCalls.className = "tool-calls";
+  const bubble = document.createElement("div");
+  bubble.className = "bubble";
+  bubble.textContent = "…thinking";
+  li.append(toolCalls, bubble);
+  chatLog.appendChild(li);
+  chatLog.scrollTop = chatLog.scrollHeight;
+  return { li, toolCalls, bubble };
+}
+
+function addToolCallChip({ toolCalls, bubble }, { call_id, tool, args }) {
+  bubble.textContent = "…thinking";
+  const chip = document.createElement("div");
+  chip.className = "tool-call pending";
+  chip.dataset.callId = call_id;
+
+  const name = document.createElement("span");
+  name.className = "tool-name";
+  name.textContent = `🔧 ${tool}`;
+
+  const argsEl = document.createElement("code");
+  argsEl.className = "tool-args";
+  argsEl.textContent = JSON.stringify(args);
+
+  chip.append(name, argsEl);
+  toolCalls.appendChild(chip);
+  chatLog.scrollTop = chatLog.scrollHeight;
+}
+
+function resolveToolCallChip({ toolCalls }, { call_id, result }) {
+  const chip = toolCalls.querySelector(`[data-call-id="${CSS.escape(String(call_id))}"]`);
+  if (!chip) return;
+  const failed = result && typeof result === "object" && "error" in result;
+  chip.classList.remove("pending");
+  chip.classList.add(failed ? "error" : "done");
+
+  const summary = document.createElement("span");
+  summary.className = "tool-summary";
+  summary.textContent = summarizeToolResult(result);
+  chip.appendChild(summary);
+  chatLog.scrollTop = chatLog.scrollHeight;
+}
+
+function summarizeToolResult(result) {
+  if (result && typeof result === "object" && "error" in result) {
+    return `error: ${result.error}`;
+  }
+  if (Array.isArray(result)) {
+    return `${result.length} result${result.length === 1 ? "" : "s"}`;
+  }
+  return "done";
+}
+
+function renderAgentFinal({ li, bubble }, result) {
+  bubble.textContent = result.answer || "(empty answer)";
 
   if (result.citations && result.citations.length) {
     const cites = document.createElement("div");
