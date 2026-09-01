@@ -52,8 +52,13 @@ ensure_port() {
 ensure_port DB_PORT
 ensure_port API_PORT
 
-# shellcheck disable=SC1091
-source .env
+# Pull in just the port assignments, not the whole file — a blind `source
+# .env` would clobber OPENROUTER_API_KEY (blank in .env by design) if it's
+# already exported from ../scripts/with-secrets.sh, breaking the secrets
+# flow silently. See ../PLAN.md "Secrets management".
+DB_PORT="$(grep -E '^DB_PORT=' .env | tail -1 | cut -d= -f2)"
+API_PORT="$(grep -E '^API_PORT=' .env | tail -1 | cut -d= -f2)"
+export DB_PORT API_PORT
 echo "db:  127.0.0.1:${DB_PORT}"
 echo "api: http://localhost:${API_PORT}"
 
