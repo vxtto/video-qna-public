@@ -156,6 +156,104 @@ async def chat(body: ChatRequest):
     }
 
 
+def _sse(event: str, data: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+
+@app.post("/api/chat/stream")
+async def chat_stream(body: ChatRequest):
+    """SSE twin of /api/chat (feature/streaming-chat-responses): same
+    session/history plumbing and same agent contract, but driven through
+    agent.run_stream and forwarded to the client as Server-Sent Events, so
+    the answer renders as it's generated instead of popping in behind a
+    static "...thinking" placeholder once the whole turn finishes. /api/chat
+    stays as-is (used by app/cli.py and anything that just wants the plain
+    JSON result)."""
+    pool = await get_pool()
+
+    if body.session_id is not None:
+        session = await queries.get_session(pool, str(body.session_id))
+        if session is None:
+            raise HTTPException(404, "session not found")
+        video_id = session["video_id"]
+    else:
+        video_id = None
+        if body.video_slug:
+            video = await queries.get_video_by_slug(pool, body.video_slug)
+            if video is None:
+                raise HTTPException(404, "video not found")
+            video_id = video["id"]
+        session = await queries.create_session(pool, video_id)
+
+    session_id = str(session["id"])
+    history_rows = await queries.list_messages(pool, session_id)
+    history = [{"role": r["role"], "content": r["content"]} for r in history_rows]
+
+    async def event_stream():
+        started = time.monotonic()
+        yield _sse("session", {"session_id": session_id})
+
+        answer = ""
+        citations: list[dict] = []
+        trace: list[dict] = []
+        usage: dict = {}
+        try:
+            async for event in agent.run_stream(
+                pool, body.message, video_id=video_id, history=history
+            ):
+                if event["type"] == "answer_delta":
+                    answer += event["text"]
+                    yield _sse("delta", {"text": event["text"]})
+                elif event["type"] == "tool_call":
+                    yield _sse("tool_call", {"tool": event["tool"], "args": event["args"]})
+                elif event["type"] == "tool_result":
+                    yield _sse("tool_result", {"tool": event["tool"]})
+                elif event["type"] == "done":
+                    # Authoritative - overrides whatever the deltas above
+                    # streamed, in case partial-JSON decoding drifted.
+                    answer = event["answer"]
+                    citations = event["citations"]
+                    trace = event["trace"]
+                    usage = event["usage"]
+        except Exception as exc:  # noqa: BLE001 - surface to the client, not a 500 mid-stream
+            log.exception("chat stream failed")
+            yield _sse("error", {"message": str(exc)})
+            return
+
+        latency_ms = int((time.monotonic() - started) * 1000)
+        persisted = await queries.record_turn(
+            pool,
+            session_id=session_id,
+            video_id=video_id,
+            user_message=body.message,
+            answer=answer,
+            citations=citations,
+            trace=trace,
+            usage=usage,
+            latency_ms=latency_ms,
+        )
+        yield _sse(
+            "final",
+            {
+                "message_id": persisted["message_id"],
+                "answer": answer,
+                "citations": citations,
+                "trace": trace,
+            },
+        )
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "cache-control": "no-cache",
+            # nginx/proxy buffering would otherwise batch chunks and defeat
+            # the whole point (see DEPLOY.md for what fronts this in prod).
+            "x-accel-buffering": "no",
+        },
+    )
+
+
 @app.get("/api/sessions/{session_id}")
 async def get_session_transcript(session_id: str):
     pool = await get_pool()
