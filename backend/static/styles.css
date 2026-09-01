@@ -141,3 +141,124 @@ main {
   font-family: inherit;
   font-size: 0.85rem;
 }
+
+.chat-pane {
+  flex: 1;
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.chat-pane h2 {
+  font-size: 0.9rem;
+  margin: 0;
+  padding: 0.6rem 1rem;
+  border-bottom: 1px solid var(--border);
+}
+
+#chat-log {
+  list-style: none;
+  margin: 0;
+  padding: 0.75rem 1rem;
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.chat-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.chat-entry .bubble {
+  padding: 0.5rem 0.7rem;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  white-space: pre-wrap;
+  max-width: 100%;
+}
+
+.chat-entry.user .bubble {
+  background: #4a90e233;
+  align-self: flex-end;
+}
+
+.chat-entry.agent .bubble {
+  background: #8882;
+  align-self: flex-start;
+}
+
+.chat-entry.agent.error .bubble {
+  background: #d9534f33;
+  color: #d9534f;
+}
+
+.citations {
+  display: flex;
+  gap: 0.3rem;
+  flex-wrap: wrap;
+}
+
+.citations button {
+  border: 1px solid var(--border);
+  background: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  padding: 0.15rem 0.4rem;
+}
+
+.citations button:hover {
+  background: #4a90e233;
+}
+
+.trace {
+  font-size: 0.75rem;
+  opacity: 0.85;
+}
+
+.trace summary {
+  cursor: pointer;
+  opacity: 0.7;
+}
+
+.trace pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: #8881;
+  padding: 0.5rem;
+  border-radius: 4px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+#chat-form {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.6rem 1rem;
+  border-top: 1px solid var(--border);
+}
+
+#chat-input {
+  flex: 1;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+
+#chat-form button {
+  border: 1px solid var(--border);
+  background: none;
+  color: inherit;
+  border-radius: 4px;
+  padding: 0.4rem 0.8rem;
+  cursor: pointer;
+}

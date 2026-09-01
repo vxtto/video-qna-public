@@ -145,3 +145,102 @@ player.addEventListener("timeupdate", () => {
 picker.addEventListener("change", () => loadVideo(picker.value));
 
 loadVideoList();
+
+// --- agent test console -----------------------------------------------
+// Bare-bones chat UI against POST /api/chat, for exercising the real
+// agent loop (app/agent.py) from the browser instead of curl/app.cli.
+// Renders the answer, clickable citation timestamps (seek the <video>),
+// and the raw tool-call trace for debugging. This backend has server-side
+// sessions (PLAN.md feature priority #6): the first call omits session_id
+// and the response hands one back, which subsequent calls replay so the
+// agent sees real conversation history instead of resetting every turn.
+
+const chatLog = document.getElementById("chat-log");
+const chatForm = document.getElementById("chat-form");
+const chatInput = document.getElementById("chat-input");
+
+let chatSessionId = null;
+
+// A session is scoped to one video (server picks video_id when the
+// session is created) - if the user switches videos mid-conversation,
+// start a fresh session rather than silently asking about the old video.
+picker.addEventListener("change", () => { chatSessionId = null; });
+
+chatForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const message = chatInput.value.trim();
+  if (!message) return;
+  chatInput.value = "";
+  chatInput.disabled = true;
+
+  appendChatEntry("user", message);
+  const pending = appendChatEntry("agent", "…thinking");
+
+  try {
+    const res = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message,
+        video_slug: currentVideo ? currentVideo.slug : null,
+        session_id: chatSessionId,
+      }),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    const result = await res.json();
+    chatSessionId = result.session_id || chatSessionId;
+    renderAgentReply(pending, result);
+  } catch (err) {
+    pending.classList.add("error");
+    pending.querySelector(".bubble").textContent = `error: ${err.message}`;
+  } finally {
+    chatInput.disabled = false;
+    chatInput.focus();
+  }
+});
+
+function appendChatEntry(role, text) {
+  const li = document.createElement("li");
+  li.className = `chat-entry ${role}`;
+  const bubble = document.createElement("div");
+  bubble.className = "bubble";
+  bubble.textContent = text;
+  li.appendChild(bubble);
+  chatLog.appendChild(li);
+  chatLog.scrollTop = chatLog.scrollHeight;
+  return li;
+}
+
+function renderAgentReply(li, result) {
+  li.querySelector(".bubble").textContent = result.answer || "(empty answer)";
+
+  if (result.citations && result.citations.length) {
+    const cites = document.createElement("div");
+    cites.className = "citations";
+    for (const c of result.citations) {
+      const btn = document.createElement("button");
+      btn.textContent = `[${fmt(c.start_ms)}]`;
+      btn.title = `chunk ${c.chunk_id}`;
+      btn.onclick = () => {
+        if (!currentVideo || c.video_id !== currentVideo.id) return;
+        player.currentTime = c.start_ms / 1000;
+        player.play();
+      };
+      cites.appendChild(btn);
+    }
+    li.appendChild(cites);
+  }
+
+  if (result.trace && result.trace.length) {
+    const details = document.createElement("details");
+    details.className = "trace";
+    const summary = document.createElement("summary");
+    summary.textContent = `trace (${result.trace.length} step${result.trace.length === 1 ? "" : "s"})`;
+    const pre = document.createElement("pre");
+    pre.textContent = JSON.stringify(result.trace, null, 2);
+    details.append(summary, pre);
+    li.appendChild(details);
+  }
+
+  chatLog.scrollTop = chatLog.scrollHeight;
+}
