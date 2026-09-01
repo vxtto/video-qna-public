@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.responses import Response, StreamingResponse
 
+from . import agent, queries
 from .db import close_pool, get_pool
 from .seed import main as seed_main
 
@@ -59,35 +60,17 @@ class SegmentReview(BaseModel):
 @app.get("/api/videos")
 async def list_videos():
     pool = await get_pool()
-    rows = await pool.fetch(
-        """
-        SELECT v.id, v.slug, v.title, v.filename, v.duration_seconds, v.license,
-               count(s.id) AS segment_count,
-               count(s.id) FILTER (WHERE s.review_status != 'unreviewed') AS reviewed_count
-        FROM videos v
-        LEFT JOIN transcript_segments s ON s.video_id = v.id
-        GROUP BY v.id
-        ORDER BY v.id
-        """
-    )
+    rows = await queries.list_videos(pool)
     return [dict(r) for r in rows]
 
 
 @app.get("/api/videos/{slug}")
 async def get_video(slug: str):
     pool = await get_pool()
-    video = await pool.fetchrow("SELECT * FROM videos WHERE slug = $1", slug)
+    video = await queries.get_video_by_slug(pool, slug)
     if video is None:
         raise HTTPException(404, "video not found")
-    segments = await pool.fetch(
-        """
-        SELECT id, seq, start_ms, end_ms, text, review_status, corrected_text
-        FROM transcript_segments
-        WHERE video_id = $1
-        ORDER BY seq
-        """,
-        video["id"],
-    )
+    segments = await queries.list_segments(pool, video["id"])
     return {**dict(video), "segments": [dict(s) for s in segments]}
 
 
@@ -96,22 +79,34 @@ async def review_segment(segment_id: int, body: SegmentReview):
     if body.review_status not in ("unreviewed", "correct", "incorrect"):
         raise HTTPException(422, "invalid review_status")
     pool = await get_pool()
-    row = await pool.fetchrow(
-        """
-        UPDATE transcript_segments
-        SET review_status = $2,
-            corrected_text = $3,
-            reviewed_at = CASE WHEN $2 = 'unreviewed' THEN NULL ELSE now() END
-        WHERE id = $1
-        RETURNING id, seq, start_ms, end_ms, text, review_status, corrected_text
-        """,
-        segment_id,
-        body.review_status,
-        body.corrected_text,
+    row = await queries.update_segment_review(
+        pool, segment_id, body.review_status, body.corrected_text
     )
     if row is None:
         raise HTTPException(404, "segment not found")
     return dict(row)
+
+
+class ChatRequest(BaseModel):
+    message: str
+    video_slug: str | None = None
+
+
+@app.post("/api/chat")
+async def chat(body: ChatRequest):
+    """Wires the bare agent loop (app/agent.py) into the API. One-shot per
+    call for now - no server-side session storage yet (CLAUDE.md risk #4
+    is still open, see the agent-loop worktree's progress notes)."""
+    pool = await get_pool()
+    video_id = None
+    if body.video_slug:
+        video = await queries.get_video_by_slug(pool, body.video_slug)
+        if video is None:
+            raise HTTPException(404, "video not found")
+        video_id = video["id"]
+
+    result = await agent.run(pool, body.message, video_id=video_id)
+    return {"answer": result.answer, "citations": result.citations, "trace": result.trace}
 
 
 CHUNK_SIZE = 1024 * 1024  # 1MB
