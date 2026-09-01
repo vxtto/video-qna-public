@@ -8,11 +8,15 @@
 <body>
   <header>
     <h1>video-qna <span class="tag">placeholder</span></h1>
-    <select id="video-picker"></select>
+    <div class="movie-selector">
+      <label for="video-picker">Movie</label>
+      <select id="video-picker"></select>
+    </div>
   </header>
 
   <main>
     <section class="player-pane">
+      <h2 id="movie-title" class="movie-title"></h2>
       <video id="player" controls></video>
       <p class="progress" id="progress"></p>
     </section>
