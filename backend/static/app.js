@@ -147,13 +147,14 @@ picker.addEventListener("change", () => loadVideo(picker.value));
 loadVideoList();
 
 // --- agent test console -----------------------------------------------
-// Bare-bones chat UI against POST /api/chat, for exercising the real
-// agent loop (app/agent.py) from the browser instead of curl/app.cli.
-// Renders the answer, clickable citation timestamps (seek the <video>),
-// and the raw tool-call trace for debugging. This backend has server-side
-// sessions (PLAN.md feature priority #6): the first call omits session_id
-// and the response hands one back, which subsequent calls replay so the
-// agent sees real conversation history instead of resetting every turn.
+// Bare-bones chat UI against POST /api/chat/stream (Server-Sent Events),
+// for exercising the real agent loop (app/agent.py) from the browser
+// instead of curl/app.cli. Renders the answer as it streams in, clickable
+// citation timestamps (seek the <video>), and the raw tool-call trace for
+// debugging. This backend has server-side sessions (PLAN.md feature
+// priority #6): the first call omits session_id and the response hands
+// one back, which subsequent calls replay so the agent sees real
+// conversation history instead of resetting every turn.
 
 const chatLog = document.getElementById("chat-log");
 const chatForm = document.getElementById("chat-form");
@@ -166,6 +167,12 @@ let chatSessionId = null;
 // start a fresh session rather than silently asking about the old video.
 picker.addEventListener("change", () => { chatSessionId = null; });
 
+const TOOL_LABELS = {
+  semantic_search: (a) => `Searching for "${a.query}"…`,
+  keyword_search: (a) => `Looking for "${a.query}"…`,
+  fetch_window: () => "Reading nearby transcript…",
+};
+
 chatForm.addEventListener("submit", async (e) => {
   e.preventDefault();
   const message = chatInput.value.trim();
@@ -174,10 +181,14 @@ chatForm.addEventListener("submit", async (e) => {
   chatInput.disabled = true;
 
   appendChatEntry("user", message);
-  const pending = appendChatEntry("agent", "…thinking");
+  const pending = appendChatEntry("agent", null);
+  showThinking(pending);
+
+  let answerText = "";
+  let streaming = false;
 
   try {
-    const res = await fetch("/api/chat", {
+    const res = await fetch("/api/chat/stream", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -186,33 +197,111 @@ chatForm.addEventListener("submit", async (e) => {
         session_id: chatSessionId,
       }),
     });
-    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-    const result = await res.json();
-    chatSessionId = result.session_id || chatSessionId;
-    renderAgentReply(pending, result);
+    if (!res.ok || !res.body) throw new Error(`${res.status} ${res.statusText}`);
+
+    for await (const evt of readSSE(res.body)) {
+      if (evt.event === "session") {
+        chatSessionId = evt.data.session_id || chatSessionId;
+      } else if (evt.event === "tool_call") {
+        const label = TOOL_LABELS[evt.data.tool]?.(evt.data.args) || `Running ${evt.data.tool}…`;
+        showThinking(pending, label);
+      } else if (evt.event === "delta") {
+        if (!streaming) { streaming = true; }
+        answerText += evt.data.text;
+        setBubbleText(pending, answerText, true);
+      } else if (evt.event === "final") {
+        finalizeAgentReply(pending, evt.data);
+      } else if (evt.event === "error") {
+        throw new Error(evt.data.message);
+      }
+    }
   } catch (err) {
     pending.classList.add("error");
-    pending.querySelector(".bubble").textContent = `error: ${err.message}`;
+    setBubbleText(pending, `error: ${err.message}`, false);
   } finally {
     chatInput.disabled = false;
     chatInput.focus();
   }
 });
 
+// Parses a `text/event-stream` body into {event, data} objects, one per
+// blank-line-terminated block - hand-rolled instead of EventSource since
+// EventSource can't POST a body (session_id/message/video_slug).
+async function* readSSE(stream) {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let idx;
+    while ((idx = buf.indexOf("\n\n")) !== -1) {
+      const raw = buf.slice(0, idx);
+      buf = buf.slice(idx + 2);
+      if (raw.trim()) yield parseSSEBlock(raw);
+    }
+  }
+}
+
+function parseSSEBlock(raw) {
+  let event = "message";
+  const dataLines = [];
+  for (const line of raw.split("\n")) {
+    if (line.startsWith("event:")) event = line.slice(6).trim();
+    else if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
+  }
+  return { event, data: dataLines.length ? JSON.parse(dataLines.join("\n")) : {} };
+}
+
 function appendChatEntry(role, text) {
   const li = document.createElement("li");
   li.className = `chat-entry ${role}`;
   const bubble = document.createElement("div");
   bubble.className = "bubble";
-  bubble.textContent = text;
   li.appendChild(bubble);
+  if (text) setBubbleText(li, text, false);
   chatLog.appendChild(li);
   chatLog.scrollTop = chatLog.scrollHeight;
   return li;
 }
 
-function renderAgentReply(li, result) {
-  li.querySelector(".bubble").textContent = result.answer || "(empty answer)";
+// Replaces "…thinking" with an animated dots indicator + an optional
+// live status label (which tool the agent is currently calling).
+function showThinking(li, label) {
+  const bubble = li.querySelector(".bubble");
+  let status = bubble.querySelector(".status");
+  if (!status) {
+    status = document.createElement("span");
+    status.className = "status";
+    status.innerHTML = `<span class="thinking-dots"><i></i><i></i><i></i></span><span class="status-label"></span>`;
+    bubble.prepend(status);
+  }
+  status.querySelector(".status-label").textContent = label || "";
+}
+
+function clearThinking(li) {
+  li.querySelector(".bubble .status")?.remove();
+}
+
+function setBubbleText(li, text, isStreaming) {
+  clearThinking(li);
+  const bubble = li.querySelector(".bubble");
+  let span = bubble.querySelector(".answer-text");
+  if (!span) {
+    span = document.createElement("span");
+    span.className = "answer-text";
+    bubble.appendChild(span);
+  }
+  span.textContent = text;
+  span.classList.toggle("streaming", isStreaming);
+  chatLog.scrollTop = chatLog.scrollHeight;
+}
+
+function finalizeAgentReply(li, result) {
+  // Authoritative - replaces whatever the deltas streamed, in case the
+  // partial-JSON decoding in agent.py drifted from the real answer.
+  setBubbleText(li, result.answer || "(empty answer)", false);
 
   if (result.citations && result.citations.length) {
     const cites = document.createElement("div");
