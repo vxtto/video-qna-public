@@ -18,6 +18,7 @@ import logging
 import re
 from pathlib import Path
 
+from . import queries
 from .db import get_pool
 
 logging.basicConfig(level=logging.INFO)
@@ -56,52 +57,33 @@ async def seed_video(pool, entry: dict) -> None:
 
     duration_seconds = sum(c["duration"] for c in chunks)
 
-    async with pool.acquire() as conn:
-        video_id = await conn.fetchval(
-            """
-            INSERT INTO videos (slug, title, filename, duration_seconds, license)
-            VALUES ($1, $2, $3, $4, $5)
-            ON CONFLICT (slug) DO UPDATE
-                SET title = EXCLUDED.title,
-                    filename = EXCLUDED.filename,
-                    duration_seconds = EXCLUDED.duration_seconds,
-                    license = EXCLUDED.license
-            RETURNING id
-            """,
-            entry["slug"],
-            entry["title"],
-            entry["filename"],
-            duration_seconds,
-            entry["license"],
-        )
+    video_id = await queries.upsert_video(
+        pool,
+        slug=entry["slug"],
+        title=entry["title"],
+        filename=entry["filename"],
+        duration_seconds=duration_seconds,
+        license=entry["license"],
+    )
 
-        seq = 0
-        rows = []
-        for chunk_index, chunk in enumerate(chunks):
-            offset_ms = round(chunk_index * CHUNK_SECONDS * 1000)
-            for segment in chunk["segments"]:
-                rows.append(
-                    (
-                        video_id,
-                        seq,
-                        offset_ms + round(segment["start"] * 1000),
-                        offset_ms + round(segment["end"] * 1000),
-                        segment["text"].strip(),
-                    )
+    seq = 0
+    rows = []
+    for chunk_index, chunk in enumerate(chunks):
+        offset_ms = round(chunk_index * CHUNK_SECONDS * 1000)
+        for segment in chunk["segments"]:
+            rows.append(
+                (
+                    video_id,
+                    seq,
+                    offset_ms + round(segment["start"] * 1000),
+                    offset_ms + round(segment["end"] * 1000),
+                    segment["text"].strip(),
                 )
-                seq += 1
+            )
+            seq += 1
 
-        await conn.execute(
-            "DELETE FROM transcript_segments WHERE video_id = $1", video_id
-        )
-        await conn.executemany(
-            """
-            INSERT INTO transcript_segments (video_id, seq, start_ms, end_ms, text)
-            VALUES ($1, $2, $3, $4, $5)
-            """,
-            rows,
-        )
-        log.info("seeded %s: %d segments (%.1fs)", entry["slug"], len(rows), duration_seconds)
+    await queries.replace_segments(pool, video_id, rows)
+    log.info("seeded %s: %d segments (%.1fs)", entry["slug"], len(rows), duration_seconds)
 
 
 async def main() -> None:

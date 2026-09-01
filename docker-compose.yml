@@ -8,7 +8,9 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      # Postgres runs every *.sql in this dir, in filename order, on first
+      # init of an empty volume only. Numbered so migration order is explicit.
+      - ./db/migrations:/docker-entrypoint-initdb.d:ro
     ports:
       - "127.0.0.1:5432:5432"
     healthcheck:
@@ -22,6 +24,9 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-video_qna}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?set in .env}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-qwen/qwen3-embedding-8b}
+      LLM_MODEL: ${LLM_MODEL:-deepseek/deepseek-v4-flash}
     depends_on:
       db:
         condition: service_healthy
