@@ -6,7 +6,9 @@ everything, same as the transcription step in video-processing.
 
 from __future__ import annotations
 
+import json
 import os
+from typing import AsyncIterator
 
 import httpx
 
@@ -65,3 +67,44 @@ async def chat(
     choice = payload["choices"][0]
     usage = payload.get("usage", {})
     return {"message": choice["message"], "usage": usage}
+
+
+async def chat_stream(
+    messages: list[dict],
+    *,
+    tools: list[dict] | None = None,
+    tool_choice: str | dict | None = None,
+    model: str | None = None,
+) -> AsyncIterator[dict]:
+    """Streamed variant of `chat()`, for feature/streaming-chat-responses.
+    Yields the raw OpenAI-compatible SSE chunk objects
+    (`{"choices": [{"delta": {...}, "finish_reason": ...}], ...}`) as they
+    arrive, plus a final usage-only chunk (`stream_options.include_usage`).
+    Caller (agent.run_stream) owns accumulating deltas into a message -
+    this stays a thin transport layer, same spirit as `chat()` above.
+    """
+    body: dict = {
+        "model": model or LLM_MODEL,
+        "messages": messages,
+        "stream": True,
+        "stream_options": {"include_usage": True},
+    }
+    if tools:
+        body["tools"] = tools
+        body["tool_choice"] = tool_choice or "auto"
+    async with httpx.AsyncClient(timeout=120) as client:
+        async with client.stream(
+            "POST", f"{BASE_URL}/chat/completions", headers=_HEADERS, json=body
+        ) as resp:
+            if resp.status_code >= 400:
+                body_bytes = await resp.aread()
+                raise RuntimeError(
+                    f"OpenRouter {resp.status_code}: {body_bytes[:2000]!r}"
+                )
+            async for line in resp.aiter_lines():
+                if not line.startswith("data:"):
+                    continue  # blank lines / OpenRouter ": keep-alive" comments
+                data = line[len("data:") :].strip()
+                if data == "[DONE]":
+                    break
+                yield json.loads(data)

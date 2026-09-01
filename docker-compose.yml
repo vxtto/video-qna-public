@@ -31,10 +31,15 @@ services:
       db:
         condition: service_healthy
     volumes:
-      # Movie files + transcript JSON produced by the video-processing
-      # worktree, mounted read-only. Requires that worktree to exist as a
-      # sibling directory (see ../video-processing/CLAUDE.md progress log).
-      - ../video-processing/data:/data/media:ro
+      # Curated movie files + transcript JSON, mounted read-only. This is
+      # NOT video-processing/data/ (that's the pipeline's full working
+      # directory — raw sources, audio, chunks, intermediate transcripts).
+      # Publish just the 480p mp4s + final transcript JSON here, e.g.:
+      #   cp video-processing/data/raw/*_480p.mp4 data/media/raw/
+      #   cp video-processing/data/transcripts/*.json data/media/transcripts/
+      # Matches the VPS layout exactly (/opt/video-qna/app/data/media) —
+      # see DEPLOY.md's media section.
+      - ./data/media:/data/media:ro
     ports:
       - "8000:8000"
 

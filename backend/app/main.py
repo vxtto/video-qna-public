@@ -8,7 +8,6 @@ retrieval.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import time
@@ -172,21 +171,30 @@ def _sse(event: str, data: dict) -> str:
 
 @app.post("/api/chat/stream")
 async def chat_stream(body: ChatRequest):
-    """Same turn as POST /api/chat, but as Server-Sent Events so the
-    frontend can render each tool call the moment it starts/finishes
-    instead of waiting for the whole agent loop to land at once.
+    """SSE twin of /api/chat: same session/history/persistence plumbing
+    (via `_resolve_session`, shared with /api/chat), but driven through
+    `agent.run_stream` and forwarded to the client as Server-Sent Events -
+    so the answer renders token-by-token AND each tool call renders the
+    moment it starts/finishes, instead of the client waiting for the whole
+    turn to land at once behind a static "...thinking" placeholder.
+    /api/chat stays as-is (used by app/cli.py and anything that just wants
+    the plain JSON result).
 
-    Event types, in order, zero or more `tool_call`/`tool_result` pairs
-    (one per real tool the model calls) followed by exactly one of
+    Event types, in order: one `session` event, then zero or more
+    `tool_call`/`tool_result`/`delta` events interleaved in whatever order
+    the agent loop actually produced them, followed by exactly one of
     `final` or `error`:
-      - `tool_call`   {call_id, tool, args}
-      - `tool_result` {call_id, tool, result}
-      - `final`       {session_id, message_id, answer, citations, trace}
+      - `session`     {session_id}
+      - `tool_call`   {call_id, tool, args}     - about to dispatch
+      - `tool_result` {call_id, tool, result}   - dispatch done (or
+                                                   {"error": ...} if it raised)
+      - `delta`       {text}                    - answer text grew
+      - `final`       {message_id, answer, citations, trace}
       - `error`       {error}
 
     Session lookup/creation happens before streaming starts (so a bad
     session_id still 404s normally); persistence happens after the agent
-    loop finishes, same as /api/chat, right before the `final` event.
+    loop finishes, right before the `final` event.
     """
     pool = await get_pool()
     session_id, video_id = await _resolve_session(pool, body)
@@ -194,70 +202,74 @@ async def chat_stream(body: ChatRequest):
     history_rows = await queries.list_messages(pool, session_id)
     history = [{"role": r["role"], "content": r["content"]} for r in history_rows]
 
-    queue: asyncio.Queue[dict] = asyncio.Queue()
-
-    async def emit(event: dict) -> None:
-        await queue.put(event)
-
-    async def run_turn() -> None:
-        # Whatever goes wrong here, event_gen() below is blocked on
-        # queue.get() waiting for exactly one final/error item - guarantee
-        # one gets sent, or the SSE stream just hangs open forever.
+    async def event_stream():
         started = time.monotonic()
+        yield _sse("session", {"session_id": session_id})
+
+        answer = ""
+        citations: list[dict] = []
+        trace: list[dict] = []
+        usage: dict = {}
         try:
-            result = await agent.run(
-                pool, body.message, video_id=video_id, history=history, emit=emit
-            )
-            latency_ms = int((time.monotonic() - started) * 1000)
-            persisted = await queries.record_turn(
-                pool,
-                session_id=session_id,
-                video_id=video_id,
-                user_message=body.message,
-                answer=result.answer,
-                citations=result.citations,
-                trace=result.trace,
-                usage=result.usage,
-                latency_ms=latency_ms,
-            )
+            async for event in agent.run_stream(
+                pool, body.message, video_id=video_id, history=history
+            ):
+                if event["type"] == "answer_delta":
+                    answer += event["text"]
+                    yield _sse("delta", {"text": event["text"]})
+                elif event["type"] == "tool_call":
+                    yield _sse(
+                        "tool_call",
+                        {"call_id": event["call_id"], "tool": event["tool"], "args": event["args"]},
+                    )
+                elif event["type"] == "tool_result":
+                    yield _sse(
+                        "tool_result",
+                        {"call_id": event["call_id"], "tool": event["tool"], "result": event["result"]},
+                    )
+                elif event["type"] == "done":
+                    # Authoritative - overrides whatever the deltas above
+                    # streamed, in case partial-JSON decoding drifted.
+                    answer = event["answer"]
+                    citations = event["citations"]
+                    trace = event["trace"]
+                    usage = event["usage"]
         except Exception as exc:  # noqa: BLE001 - surface to the client, not a 500 mid-stream
-            log.exception("agent turn failed")
-            await queue.put({"type": "error", "error": str(exc)})
+            log.exception("chat stream failed")
+            yield _sse("error", {"error": str(exc)})
             return
 
-        await queue.put(
+        latency_ms = int((time.monotonic() - started) * 1000)
+        persisted = await queries.record_turn(
+            pool,
+            session_id=session_id,
+            video_id=video_id,
+            user_message=body.message,
+            answer=answer,
+            citations=citations,
+            trace=trace,
+            usage=usage,
+            latency_ms=latency_ms,
+        )
+        yield _sse(
+            "final",
             {
-                "type": "final",
-                "session_id": session_id,
                 "message_id": persisted["message_id"],
-                "answer": result.answer,
-                "citations": result.citations,
-                "trace": result.trace,
-            }
+                "answer": answer,
+                "citations": citations,
+                "trace": trace,
+            },
         )
 
-    async def event_gen():
-        task = asyncio.create_task(run_turn())
-        try:
-            while True:
-                item = await queue.get()
-                event_type = item.pop("type")
-                yield _sse(event_type, item)
-                if event_type in ("final", "error"):
-                    break
-        finally:
-            # Make sure a client disconnect (or the break above) doesn't
-            # leave run_turn() as an orphaned task still writing to the DB
-            # unsupervised - either it's already done (no-op) or it's
-            # cancelled cleanly.
-            if not task.done():
-                task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
-
     return StreamingResponse(
-        event_gen(),
+        event_stream(),
         media_type="text/event-stream",
-        headers={"cache-control": "no-cache", "x-accel-buffering": "no"},
+        headers={
+            "cache-control": "no-cache",
+            # nginx/proxy buffering would otherwise batch chunks and defeat
+            # the whole point (see DEPLOY.md for what fronts this in prod).
+            "x-accel-buffering": "no",
+        },
     )
 
 

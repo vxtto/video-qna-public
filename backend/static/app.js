@@ -147,11 +147,12 @@ picker.addEventListener("change", () => loadVideo(picker.value));
 loadVideoList();
 
 // --- agent test console -----------------------------------------------
-// Bare-bones chat UI against POST /api/chat/stream, for exercising the
-// real agent loop (app/agent.py) from the browser instead of curl/app.cli.
-// Renders tool calls as they happen (SSE `tool_call`/`tool_result` events -
-// see main.py's /api/chat/stream), then the final answer, clickable
-// citation timestamps (seek the <video>), and the raw tool-call trace for
+// Bare-bones chat UI against POST /api/chat/stream (Server-Sent Events),
+// for exercising the real agent loop (app/agent.py) from the browser
+// instead of curl/app.cli. Renders tool calls as they happen (a live chip
+// per call, see agent.run_stream's tool_call/tool_result events) *and*
+// streams the final answer in token-by-token, clickable citation
+// timestamps (seek the <video>), and the raw tool-call trace for
 // debugging. This backend has server-side sessions (PLAN.md feature
 // priority #6): the first call omits session_id and the response hands
 // one back, which subsequent calls replay so the agent sees real
@@ -177,72 +178,78 @@ chatForm.addEventListener("submit", async (e) => {
 
   appendChatEntry("user", message);
   const agentEntry = appendAgentEntry();
+  let answerText = "";
 
   try {
-    await streamChat(
-      {
+    for await (const evt of readSSE(
+      await postChatStream({
         message,
         video_slug: currentVideo ? currentVideo.slug : null,
         session_id: chatSessionId,
-      },
-      {
-        tool_call: (evt) => addToolCallChip(agentEntry, evt),
-        tool_result: (evt) => resolveToolCallChip(agentEntry, evt),
-        final: (evt) => {
-          chatSessionId = evt.session_id || chatSessionId;
-          renderAgentFinal(agentEntry, evt);
-        },
-        error: (evt) => {
-          agentEntry.li.classList.add("error");
-          agentEntry.bubble.textContent = `error: ${evt.error}`;
-        },
+      })
+    )) {
+      if (evt.event === "session") {
+        chatSessionId = evt.data.session_id || chatSessionId;
+      } else if (evt.event === "tool_call") {
+        addToolCallChip(agentEntry, evt.data);
+      } else if (evt.event === "tool_result") {
+        resolveToolCallChip(agentEntry, evt.data);
+      } else if (evt.event === "delta") {
+        answerText += evt.data.text;
+        setBubbleText(agentEntry, answerText, true);
+      } else if (evt.event === "final") {
+        finalizeAgentReply(agentEntry, evt.data);
+      } else if (evt.event === "error") {
+        throw new Error(evt.data.error);
       }
-    );
+    }
   } catch (err) {
     agentEntry.li.classList.add("error");
-    agentEntry.bubble.textContent = `error: ${err.message}`;
+    setBubbleText(agentEntry, `error: ${err.message}`, false);
   } finally {
     chatInput.disabled = false;
     chatInput.focus();
   }
 });
 
-// Reads a `text/event-stream` response body (POST, so no plain
-// EventSource - it can't send a JSON body) and dispatches each event to
-// `handlers[eventType](data)` as soon as it arrives, not after the whole
-// response finishes.
-async function streamChat(body, handlers) {
+async function postChatStream(body) {
   const res = await fetch("/api/chat/stream", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
   if (!res.ok || !res.body) throw new Error(`${res.status} ${res.statusText}`);
+  return res.body;
+}
 
-  const reader = res.body.getReader();
+// Parses a `text/event-stream` body into {event, data} objects, one per
+// blank-line-terminated block - hand-rolled instead of EventSource since
+// EventSource can't POST a body (session_id/message/video_slug).
+async function* readSSE(stream) {
+  const reader = stream.getReader();
   const decoder = new TextDecoder();
   let buf = "";
-
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
     buf += decoder.decode(value, { stream: true });
-
-    let sep;
-    while ((sep = buf.indexOf("\n\n")) >= 0) {
-      const raw = buf.slice(0, sep);
-      buf = buf.slice(sep + 2);
-
-      let eventType = "message";
-      let data = "";
-      for (const line of raw.split("\n")) {
-        if (line.startsWith("event:")) eventType = line.slice(6).trim();
-        else if (line.startsWith("data:")) data += line.slice(5).trim();
-      }
-      if (!data) continue;
-      handlers[eventType]?.(JSON.parse(data));
+    let idx;
+    while ((idx = buf.indexOf("\n\n")) !== -1) {
+      const raw = buf.slice(0, idx);
+      buf = buf.slice(idx + 2);
+      if (raw.trim()) yield parseSSEBlock(raw);
     }
   }
+}
+
+function parseSSEBlock(raw) {
+  let event = "message";
+  const dataLines = [];
+  for (const line of raw.split("\n")) {
+    if (line.startsWith("event:")) event = line.slice(6).trim();
+    else if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
+  }
+  return { event, data: dataLines.length ? JSON.parse(dataLines.join("\n")) : {} };
 }
 
 function appendChatEntry(role, text) {
@@ -258,7 +265,8 @@ function appendChatEntry(role, text) {
 }
 
 // Agent replies get a `.tool-calls` slot above the bubble, so tool-call
-// chips can be appended/updated live before the final answer text lands.
+// chips can be appended/updated live before (and independently of) the
+// final answer text, which streams into the bubble as it's generated.
 function appendAgentEntry() {
   const li = document.createElement("li");
   li.className = "chat-entry agent";
@@ -266,15 +274,29 @@ function appendAgentEntry() {
   toolCalls.className = "tool-calls";
   const bubble = document.createElement("div");
   bubble.className = "bubble";
-  bubble.textContent = "…thinking";
   li.append(toolCalls, bubble);
   chatLog.appendChild(li);
+  showThinking({ li, toolCalls, bubble });
   chatLog.scrollTop = chatLog.scrollHeight;
   return { li, toolCalls, bubble };
 }
 
+// Animated dots indicator, shown until either a tool-call chip or the
+// first answer delta gives the user something more specific to look at.
+function showThinking({ bubble }) {
+  if (bubble.querySelector(".status")) return;
+  const status = document.createElement("span");
+  status.className = "status";
+  status.innerHTML = `<span class="thinking-dots"><i></i><i></i><i></i></span>`;
+  bubble.prepend(status);
+}
+
+function clearThinking({ bubble }) {
+  bubble.querySelector(".status")?.remove();
+}
+
 function addToolCallChip({ toolCalls, bubble }, { call_id, tool, args }) {
-  bubble.textContent = "…thinking";
+  clearThinking({ bubble });
   const chip = document.createElement("div");
   chip.className = "tool-call pending";
   chip.dataset.callId = call_id;
@@ -316,8 +338,27 @@ function summarizeToolResult(result) {
   return "done";
 }
 
-function renderAgentFinal({ li, bubble }, result) {
-  bubble.textContent = result.answer || "(empty answer)";
+// Used for both mid-stream deltas (isStreaming: true, blinking caret) and
+// the final/error text (isStreaming: false).
+function setBubbleText(entry, text, isStreaming) {
+  clearThinking(entry);
+  const bubble = entry.bubble;
+  let span = bubble.querySelector(".answer-text");
+  if (!span) {
+    span = document.createElement("span");
+    span.className = "answer-text";
+    bubble.appendChild(span);
+  }
+  span.textContent = text;
+  span.classList.toggle("streaming", isStreaming);
+  chatLog.scrollTop = chatLog.scrollHeight;
+}
+
+function finalizeAgentReply(entry, result) {
+  // Authoritative - replaces whatever the deltas streamed, in case the
+  // partial-JSON decoding in agent.py drifted from the real answer.
+  setBubbleText(entry, result.answer || "(empty answer)", false);
+  const li = entry.li;
 
   if (result.citations && result.citations.length) {
     const cites = document.createElement("div");

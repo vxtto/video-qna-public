@@ -2,7 +2,7 @@
 
 Smallest thing that lets a human watch a movie in the browser and confirm
 its Whisper transcript is correct, segment by segment, before it's trusted
-for retrieval. Not the real RAG backend yet — see [`../PLAN.md`](../PLAN.md)
+for retrieval. Not the real RAG backend yet — see [`PLAN.md`](PLAN.md)
 for the overall plan.
 
 ## Stack
@@ -19,14 +19,14 @@ for the overall plan.
 
 ## Prerequisites
 
-This mounts movie files + transcript JSON from the **`video-processing`**
-worktree as a read-only volume (`../video-processing/data`), so that
-worktree must exist as a sibling directory:
+This mounts `data/media/` (gitignored, not `video-processing/data/` — see
+[`video-processing/README.md`](video-processing/README.md) for the
+distinction) as a read-only volume. Populate it before first boot:
 
-```
-video-qna-worktrees/
-├── docker-compose/   ← you are here
-└── video-processing/ ← data/raw/*.mp4, data/transcripts/*.json
+```bash
+mkdir -p data/media/raw data/media/transcripts
+cp video-processing/data/raw/*_480p.mp4 data/media/raw/
+cp video-processing/data/transcripts/*.json data/media/transcripts/
 ```
 
 ## Run it
@@ -50,7 +50,7 @@ docker compose exec api python -m app.seed
 
 - Single hardcoded movie (Tears of Steel) in `seed.py`'s `MANIFEST` — add
   entries as the other 3 corpus videos come through the pipeline.
-- No auth — fine for local dev only, per `../PLAN.md` this needs a
+- No auth — fine for local dev only, per `PLAN.md` this needs a
   shared token before anything touches a public VPS.
 - No pgvector columns used yet — extension is enabled so the schema doesn't
   need a migration when embeddings show up.
