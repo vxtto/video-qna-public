@@ -29,16 +29,26 @@ cp video-processing/data/raw/*_480p.mp4 data/media/raw/
 cp video-processing/data/transcripts/*.json data/media/transcripts/
 ```
 
+Running more than one worktree's stack on the same box? Point
+`MEDIA_HOST_DIR` in `.env` at one shared directory instead of repeating
+this per worktree — see `.env.example` and `PLAN.md`'s "Running several
+worktrees in parallel".
+
 ## Run it
 
 ```bash
 cp .env.example .env   # optional, defaults already work
-docker compose up --build
+./scripts/dev-up.sh    # self-assigns free host ports, then docker compose up -d --build
 ```
+
+Only one worktree's stack running on this box? Plain `docker compose up
+--build` (foreground) still works fine — `dev-up.sh` only matters once
+you're running more than one at a time, see `PLAN.md`.
 
 First boot auto-seeds Postgres from `video-processing/data/transcripts/*.json`
 (see [`backend/app/seed.py`](backend/app/seed.py)) if the `videos` table is
-empty. Then open http://localhost:8000.
+empty. Then open the URL `dev-up.sh` printed (or http://localhost:8000 if
+you ran compose directly).
 
 To re-seed after editing the manifest in `seed.py`:
 

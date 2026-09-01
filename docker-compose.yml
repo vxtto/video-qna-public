@@ -12,7 +12,10 @@ services:
       # init of an empty volume only. Numbered so migration order is explicit.
       - ./db/migrations:/docker-entrypoint-initdb.d:ro
     ports:
-      - "127.0.0.1:5432:5432"
+      # Parameterized so parallel worktrees on one box don't fight over the
+      # same host port — see scripts/dev-up.sh, which self-assigns free
+      # ports into each worktree's own gitignored .env on first run.
+      - "127.0.0.1:${DB_PORT:-5432}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
       interval: 5s
@@ -39,9 +42,17 @@ services:
       #   cp video-processing/data/transcripts/*.json data/media/transcripts/
       # Matches the VPS layout exactly (/opt/video-qna/app/data/media) —
       # see DEPLOY.md's media section.
-      - ./data/media:/data/media:ro
+      #
+      # MEDIA_HOST_DIR lets multiple worktrees on one box point at ONE
+      # shared copy of these (multi-hundred-MB) files instead of each
+      # worktree duplicating them under its own ./data/media — set it in
+      # that worktree's .env. Defaults to the worktree-local path so a
+      # single-worktree setup needs no config. See PLAN.md's "A note on
+      # worktrees" / "Running several worktrees in parallel".
+      - ${MEDIA_HOST_DIR:-./data/media}:/data/media:ro
     ports:
-      - "8000:8000"
+      # See db's port comment above — same reasoning.
+      - "${API_PORT:-8000}:8000"
 
 volumes:
   pgdata:
