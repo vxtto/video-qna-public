@@ -29,16 +29,34 @@ cp video-processing/data/raw/*_480p.mp4 data/media/raw/
 cp video-processing/data/transcripts/*.json data/media/transcripts/
 ```
 
+**Working in a worktree under `../video-qna-worktrees/`, and the main
+checkout already has `data/media/` populated?** Don't recopy/reprocess —
+point at it:
+
+```bash
+echo "MEDIA_HOST_DIR=$(cd ../../video-qna && pwd)/data/media" >> .env
+```
+
+Then `./scripts/dev-up.sh` below. Same idea for pointing at *any* other
+worktree's already-populated copy — see `.env.example` and `PLAN.md`'s
+"Running several worktrees in parallel". Only fall back to the
+mkdir/cp steps above if no populated copy exists anywhere yet.
+
 ## Run it
 
 ```bash
 cp .env.example .env   # optional, defaults already work
-docker compose up --build
+./scripts/dev-up.sh    # self-assigns free host ports, then docker compose up -d --build
 ```
+
+Only one worktree's stack running on this box? Plain `docker compose up
+--build` (foreground) still works fine — `dev-up.sh` only matters once
+you're running more than one at a time, see `PLAN.md`.
 
 First boot auto-seeds Postgres from `video-processing/data/transcripts/*.json`
 (see [`backend/app/seed.py`](backend/app/seed.py)) if the `videos` table is
-empty. Then open http://localhost:8000.
+empty. Then open the URL `dev-up.sh` printed (or http://localhost:8000 if
+you ran compose directly).
 
 To re-seed after editing the manifest in `seed.py`:
 

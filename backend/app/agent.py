@@ -66,7 +66,9 @@ async def run(
     video_id: int | None = None,
     history: list[dict] | None = None,
 ) -> AgentResult:
-    """Run one turn of the agent loop.
+    """Run one turn of the agent loop, all at once - no partial output until
+    it returns. Still used by app/cli.py. For real-time tool-call/answer
+    streaming (the /api/chat/stream endpoint), see `run_stream` below.
 
     `video_id`, if given, scopes semantic_search/keyword_search to one
     video (the default for a single-video "watch page" chat). `history` is
@@ -207,18 +209,27 @@ async def run_stream(
     Same tool loop, same grounding contract, but yields events as they
     happen instead of returning one `AgentResult` at the end:
 
-      {"type": "tool_call", "tool": ..., "args": ...}    - about to dispatch
-      {"type": "tool_result", "tool": ..., "result": ...} - dispatch done
+      {"type": "tool_call", "call_id": ..., "tool": ..., "args": ...}
+          - about to dispatch
+      {"type": "tool_result", "call_id": ..., "tool": ..., "result": ...}
+          - dispatch done, `result` is the same JSON-able value that
+            lands in `trace` (or {"error": ...} if the tool raised)
       {"type": "answer_delta", "text": ...}               - answer text grew
       {"type": "done", "answer", "citations", "trace", "usage"}  - final,
           always the last event; authoritative even if deltas drifted.
+
+    `call_id` (the model API's tool_call id) lets a caller correlate a
+    `tool_result` back to the `tool_call` that started it - e.g. the
+    frontend's live tool-call chips (PLAN.md/feature "tool calls rendered
+    in real time"), which render one chip per call_id and flip it from
+    pending to done/error as its result arrives.
 
     The tool-call turns (semantic_search/keyword_search/fetch_window)
     still need their full arguments before they can run, so there's
     nothing to stream mid-turn there - only `tool_call`/`tool_result`
     bracket them, same info the non-streamed trace already carries.
-    Streaming is only useful (and only wired up) for the final_answer
-    turn's `answer` text, decoded incrementally via
+    Token-level streaming is only useful (and only wired up) for the
+    final_answer turn's `answer` text, decoded incrementally via
     `_partial_string_field` as its tool-call arguments arrive, plus the
     rare plain-text fallback turn (no tool call at all - see `run()`).
     """
@@ -301,7 +312,7 @@ async def run_stream(
                 }
                 return
 
-            yield {"type": "tool_call", "tool": fn_name, "args": args}
+            yield {"type": "tool_call", "call_id": call["id"], "tool": fn_name, "args": args}
             try:
                 tool_result = await tools.dispatch(db, fn_name, args, default_video_id=video_id)
             except Exception as exc:  # noqa: BLE001 - surface to the model, not a crash
@@ -309,7 +320,12 @@ async def run_stream(
                 tool_result = {"error": str(exc)}
 
             trace.append({"tool": fn_name, "args": args, "result": tool_result})
-            yield {"type": "tool_result", "tool": fn_name, "result": tool_result}
+            yield {
+                "type": "tool_result",
+                "call_id": call["id"],
+                "tool": fn_name,
+                "result": tool_result,
+            }
             messages.append(
                 {"role": "tool", "tool_call_id": call["id"], "content": json.dumps(tool_result)}
             )

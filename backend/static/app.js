@@ -149,8 +149,10 @@ loadVideoList();
 // --- agent test console -----------------------------------------------
 // Bare-bones chat UI against POST /api/chat/stream (Server-Sent Events),
 // for exercising the real agent loop (app/agent.py) from the browser
-// instead of curl/app.cli. Renders the answer as it streams in, clickable
-// citation timestamps (seek the <video>), and the raw tool-call trace for
+// instead of curl/app.cli. Renders tool calls as they happen (a live chip
+// per call, see agent.run_stream's tool_call/tool_result events) *and*
+// streams the final answer in token-by-token, clickable citation
+// timestamps (seek the <video>), and the raw tool-call trace for
 // debugging. This backend has server-side sessions (PLAN.md feature
 // priority #6): the first call omits session_id and the response hands
 // one back, which subsequent calls replay so the agent sees real
@@ -167,12 +169,6 @@ let chatSessionId = null;
 // start a fresh session rather than silently asking about the old video.
 picker.addEventListener("change", () => { chatSessionId = null; });
 
-const TOOL_LABELS = {
-  semantic_search: (a) => `Searching for "${a.query}"…`,
-  keyword_search: (a) => `Looking for "${a.query}"…`,
-  fetch_window: () => "Reading nearby transcript…",
-};
-
 chatForm.addEventListener("submit", async (e) => {
   e.preventDefault();
   const message = chatInput.value.trim();
@@ -181,48 +177,50 @@ chatForm.addEventListener("submit", async (e) => {
   chatInput.disabled = true;
 
   appendChatEntry("user", message);
-  const pending = appendChatEntry("agent", null);
-  showThinking(pending);
-
+  const agentEntry = appendAgentEntry();
   let answerText = "";
-  let streaming = false;
 
   try {
-    const res = await fetch("/api/chat/stream", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+    for await (const evt of readSSE(
+      await postChatStream({
         message,
         video_slug: currentVideo ? currentVideo.slug : null,
         session_id: chatSessionId,
-      }),
-    });
-    if (!res.ok || !res.body) throw new Error(`${res.status} ${res.statusText}`);
-
-    for await (const evt of readSSE(res.body)) {
+      })
+    )) {
       if (evt.event === "session") {
         chatSessionId = evt.data.session_id || chatSessionId;
       } else if (evt.event === "tool_call") {
-        const label = TOOL_LABELS[evt.data.tool]?.(evt.data.args) || `Running ${evt.data.tool}…`;
-        showThinking(pending, label);
+        addToolCallChip(agentEntry, evt.data);
+      } else if (evt.event === "tool_result") {
+        resolveToolCallChip(agentEntry, evt.data);
       } else if (evt.event === "delta") {
-        if (!streaming) { streaming = true; }
         answerText += evt.data.text;
-        setBubbleText(pending, answerText, true);
+        setBubbleText(agentEntry, answerText, true);
       } else if (evt.event === "final") {
-        finalizeAgentReply(pending, evt.data);
+        finalizeAgentReply(agentEntry, evt.data);
       } else if (evt.event === "error") {
-        throw new Error(evt.data.message);
+        throw new Error(evt.data.error);
       }
     }
   } catch (err) {
-    pending.classList.add("error");
-    setBubbleText(pending, `error: ${err.message}`, false);
+    agentEntry.li.classList.add("error");
+    setBubbleText(agentEntry, `error: ${err.message}`, false);
   } finally {
     chatInput.disabled = false;
     chatInput.focus();
   }
 });
+
+async function postChatStream(body) {
+  const res = await fetch("/api/chat/stream", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok || !res.body) throw new Error(`${res.status} ${res.statusText}`);
+  return res.body;
+}
 
 // Parses a `text/event-stream` body into {event, data} objects, one per
 // blank-line-terminated block - hand-rolled instead of EventSource since
@@ -259,34 +257,92 @@ function appendChatEntry(role, text) {
   li.className = `chat-entry ${role}`;
   const bubble = document.createElement("div");
   bubble.className = "bubble";
+  bubble.textContent = text;
   li.appendChild(bubble);
-  if (text) setBubbleText(li, text, false);
   chatLog.appendChild(li);
   chatLog.scrollTop = chatLog.scrollHeight;
   return li;
 }
 
-// Replaces "…thinking" with an animated dots indicator + an optional
-// live status label (which tool the agent is currently calling).
-function showThinking(li, label) {
-  const bubble = li.querySelector(".bubble");
-  let status = bubble.querySelector(".status");
-  if (!status) {
-    status = document.createElement("span");
-    status.className = "status";
-    status.innerHTML = `<span class="thinking-dots"><i></i><i></i><i></i></span><span class="status-label"></span>`;
-    bubble.prepend(status);
+// Agent replies get a `.tool-calls` slot above the bubble, so tool-call
+// chips can be appended/updated live before (and independently of) the
+// final answer text, which streams into the bubble as it's generated.
+function appendAgentEntry() {
+  const li = document.createElement("li");
+  li.className = "chat-entry agent";
+  const toolCalls = document.createElement("div");
+  toolCalls.className = "tool-calls";
+  const bubble = document.createElement("div");
+  bubble.className = "bubble";
+  li.append(toolCalls, bubble);
+  chatLog.appendChild(li);
+  showThinking({ li, toolCalls, bubble });
+  chatLog.scrollTop = chatLog.scrollHeight;
+  return { li, toolCalls, bubble };
+}
+
+// Animated dots indicator, shown until either a tool-call chip or the
+// first answer delta gives the user something more specific to look at.
+function showThinking({ bubble }) {
+  if (bubble.querySelector(".status")) return;
+  const status = document.createElement("span");
+  status.className = "status";
+  status.innerHTML = `<span class="thinking-dots"><i></i><i></i><i></i></span>`;
+  bubble.prepend(status);
+}
+
+function clearThinking({ bubble }) {
+  bubble.querySelector(".status")?.remove();
+}
+
+function addToolCallChip({ toolCalls, bubble }, { call_id, tool, args }) {
+  clearThinking({ bubble });
+  const chip = document.createElement("div");
+  chip.className = "tool-call pending";
+  chip.dataset.callId = call_id;
+
+  const name = document.createElement("span");
+  name.className = "tool-name";
+  name.textContent = `🔧 ${tool}`;
+
+  const argsEl = document.createElement("code");
+  argsEl.className = "tool-args";
+  argsEl.textContent = JSON.stringify(args);
+
+  chip.append(name, argsEl);
+  toolCalls.appendChild(chip);
+  chatLog.scrollTop = chatLog.scrollHeight;
+}
+
+function resolveToolCallChip({ toolCalls }, { call_id, result }) {
+  const chip = toolCalls.querySelector(`[data-call-id="${CSS.escape(String(call_id))}"]`);
+  if (!chip) return;
+  const failed = result && typeof result === "object" && "error" in result;
+  chip.classList.remove("pending");
+  chip.classList.add(failed ? "error" : "done");
+
+  const summary = document.createElement("span");
+  summary.className = "tool-summary";
+  summary.textContent = summarizeToolResult(result);
+  chip.appendChild(summary);
+  chatLog.scrollTop = chatLog.scrollHeight;
+}
+
+function summarizeToolResult(result) {
+  if (result && typeof result === "object" && "error" in result) {
+    return `error: ${result.error}`;
   }
-  status.querySelector(".status-label").textContent = label || "";
+  if (Array.isArray(result)) {
+    return `${result.length} result${result.length === 1 ? "" : "s"}`;
+  }
+  return "done";
 }
 
-function clearThinking(li) {
-  li.querySelector(".bubble .status")?.remove();
-}
-
-function setBubbleText(li, text, isStreaming) {
-  clearThinking(li);
-  const bubble = li.querySelector(".bubble");
+// Used for both mid-stream deltas (isStreaming: true, blinking caret) and
+// the final/error text (isStreaming: false).
+function setBubbleText(entry, text, isStreaming) {
+  clearThinking(entry);
+  const bubble = entry.bubble;
   let span = bubble.querySelector(".answer-text");
   if (!span) {
     span = document.createElement("span");
@@ -298,10 +354,11 @@ function setBubbleText(li, text, isStreaming) {
   chatLog.scrollTop = chatLog.scrollHeight;
 }
 
-function finalizeAgentReply(li, result) {
+function finalizeAgentReply(entry, result) {
   // Authoritative - replaces whatever the deltas streamed, in case the
   // partial-JSON decoding in agent.py drifted from the real answer.
-  setBubbleText(li, result.answer || "(empty answer)", false);
+  setBubbleText(entry, result.answer || "(empty answer)", false);
+  const li = entry.li;
 
   if (result.citations && result.citations.length) {
     const cites = document.createElement("div");

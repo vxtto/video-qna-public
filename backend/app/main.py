@@ -15,6 +15,7 @@ import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import asyncpg
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -102,16 +103,9 @@ def _parse_citations(raw: str | None) -> list[dict] | None:
     return json.loads(raw) if raw else None
 
 
-@app.post("/api/chat")
-async def chat(body: ChatRequest):
-    """Wires the bare agent loop (app/agent.py) into the API, now with
-    server-side session storage (PLAN.md feature priority #6): every turn
-    is persisted as a `messages` row pair + an `events` analytics row, and
-    prior turns in the same session are replayed into the agent loop as
-    history. Still no trim/summarize policy (priority #5) - the full
-    history is replayed every turn."""
-    pool = await get_pool()
-
+async def _resolve_session(pool: asyncpg.Pool, body: ChatRequest) -> tuple[str, int | None]:
+    """Shared by /api/chat and /api/chat/stream: find-or-create the session
+    for this request, return (session_id, video_id)."""
     if body.session_id is not None:
         session = await queries.get_session(pool, str(body.session_id))
         if session is None:
@@ -125,8 +119,23 @@ async def chat(body: ChatRequest):
                 raise HTTPException(404, "video not found")
             video_id = video["id"]
         session = await queries.create_session(pool, video_id)
+    return str(session["id"]), video_id
 
-    session_id = str(session["id"])
+
+@app.post("/api/chat")
+async def chat(body: ChatRequest):
+    """Wires the bare agent loop (app/agent.py) into the API, now with
+    server-side session storage (PLAN.md feature priority #6): every turn
+    is persisted as a `messages` row pair + an `events` analytics row, and
+    prior turns in the same session are replayed into the agent loop as
+    history. Still no trim/summarize policy (priority #5) - the full
+    history is replayed every turn.
+
+    One-shot: the client gets nothing until the whole turn (every tool
+    call + the final answer) is done. See POST /api/chat/stream below for
+    the version that renders tool calls as they happen."""
+    pool = await get_pool()
+    session_id, video_id = await _resolve_session(pool, body)
 
     history_rows = await queries.list_messages(pool, session_id)
     history = [{"role": r["role"], "content": r["content"]} for r in history_rows]
@@ -162,30 +171,34 @@ def _sse(event: str, data: dict) -> str:
 
 @app.post("/api/chat/stream")
 async def chat_stream(body: ChatRequest):
-    """SSE twin of /api/chat (feature/streaming-chat-responses): same
-    session/history plumbing and same agent contract, but driven through
-    agent.run_stream and forwarded to the client as Server-Sent Events, so
-    the answer renders as it's generated instead of popping in behind a
-    static "...thinking" placeholder once the whole turn finishes. /api/chat
-    stays as-is (used by app/cli.py and anything that just wants the plain
-    JSON result)."""
+    """SSE twin of /api/chat: same session/history/persistence plumbing
+    (via `_resolve_session`, shared with /api/chat), but driven through
+    `agent.run_stream` and forwarded to the client as Server-Sent Events -
+    so the answer renders token-by-token AND each tool call renders the
+    moment it starts/finishes, instead of the client waiting for the whole
+    turn to land at once behind a static "...thinking" placeholder.
+    /api/chat stays as-is (used by app/cli.py and anything that just wants
+    the plain JSON result).
+
+    Event types, in order: one `session` event, then zero or more
+    `tool_call`/`tool_result`/`delta` events interleaved in whatever order
+    the agent loop actually produced them, followed by exactly one of
+    `final` or `error`:
+      - `session`     {session_id}
+      - `tool_call`   {call_id, tool, args}     - about to dispatch
+      - `tool_result` {call_id, tool, result}   - dispatch done (or
+                                                   {"error": ...} if it raised)
+      - `delta`       {text}                    - answer text grew
+      - `final`       {message_id, answer, citations, trace}
+      - `error`       {error}
+
+    Session lookup/creation happens before streaming starts (so a bad
+    session_id still 404s normally); persistence happens after the agent
+    loop finishes, right before the `final` event.
+    """
     pool = await get_pool()
+    session_id, video_id = await _resolve_session(pool, body)
 
-    if body.session_id is not None:
-        session = await queries.get_session(pool, str(body.session_id))
-        if session is None:
-            raise HTTPException(404, "session not found")
-        video_id = session["video_id"]
-    else:
-        video_id = None
-        if body.video_slug:
-            video = await queries.get_video_by_slug(pool, body.video_slug)
-            if video is None:
-                raise HTTPException(404, "video not found")
-            video_id = video["id"]
-        session = await queries.create_session(pool, video_id)
-
-    session_id = str(session["id"])
     history_rows = await queries.list_messages(pool, session_id)
     history = [{"role": r["role"], "content": r["content"]} for r in history_rows]
 
@@ -205,9 +218,15 @@ async def chat_stream(body: ChatRequest):
                     answer += event["text"]
                     yield _sse("delta", {"text": event["text"]})
                 elif event["type"] == "tool_call":
-                    yield _sse("tool_call", {"tool": event["tool"], "args": event["args"]})
+                    yield _sse(
+                        "tool_call",
+                        {"call_id": event["call_id"], "tool": event["tool"], "args": event["args"]},
+                    )
                 elif event["type"] == "tool_result":
-                    yield _sse("tool_result", {"tool": event["tool"]})
+                    yield _sse(
+                        "tool_result",
+                        {"call_id": event["call_id"], "tool": event["tool"], "result": event["result"]},
+                    )
                 elif event["type"] == "done":
                     # Authoritative - overrides whatever the deltas above
                     # streamed, in case partial-JSON decoding drifted.
@@ -217,7 +236,7 @@ async def chat_stream(body: ChatRequest):
                     usage = event["usage"]
         except Exception as exc:  # noqa: BLE001 - surface to the client, not a 500 mid-stream
             log.exception("chat stream failed")
-            yield _sse("error", {"message": str(exc)})
+            yield _sse("error", {"error": str(exc)})
             return
 
         latency_ms = int((time.monotonic() - started) * 1000)
