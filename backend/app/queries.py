@@ -11,6 +11,7 @@ Functions take an acquired `asyncpg` connection or pool (anything with
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import asyncpg
@@ -249,4 +250,134 @@ async def fetch_window(
         video_id,
         timestamp_ms - before_ms,
         timestamp_ms + after_ms,
+    )
+
+
+# ---------------------------------------------------------------------------
+# sessions / messages / events (PLAN.md feature priority #6)
+# ---------------------------------------------------------------------------
+
+
+async def create_session(db: asyncpg.Pool, video_id: int | None) -> asyncpg.Record:
+    return await db.fetchrow(
+        """
+        INSERT INTO sessions (video_id)
+        VALUES ($1)
+        RETURNING id, video_id, created_at, last_active_at
+        """,
+        video_id,
+    )
+
+
+async def get_session(db: asyncpg.Pool, session_id: str) -> asyncpg.Record | None:
+    return await db.fetchrow(
+        "SELECT * FROM sessions WHERE id = $1::uuid", session_id
+    )
+
+
+async def list_messages(db: asyncpg.Pool, session_id: str) -> list[asyncpg.Record]:
+    """Ordered oldest-first - both for replaying into the agent loop's
+    `history` and for rendering a transcript. Left-joins `events` for the
+    feedback column since that's the one bit of event state the frontend
+    needs per-message; the rest of the event (trace, tokens, latency) is
+    internal analytics, not exposed here."""
+    return await db.fetch(
+        """
+        SELECT m.id, m.role, m.content, m.citations, m.created_at,
+               e.feedback
+        FROM messages m
+        LEFT JOIN events e ON e.message_id = m.id
+        WHERE m.session_id = $1::uuid
+        ORDER BY m.id
+        """,
+        session_id,
+    )
+
+
+async def record_turn(
+    db: asyncpg.Pool,
+    *,
+    session_id: str,
+    video_id: int | None,
+    user_message: str,
+    answer: str,
+    citations: list[dict],
+    trace: list[dict],
+    usage: dict,
+    latency_ms: int,
+) -> asyncpg.Record:
+    """Persists one /api/chat turn - the user + assistant messages, an
+    analytics event, and a bump of the session's last_active_at - all in
+    one transaction so a crash mid-turn can't leave a dangling assistant
+    message with no event, or vice versa."""
+    chunk_ids = sorted(
+        {
+            r["id"]
+            for step in trace
+            if step["tool"] != "final_answer" and isinstance(step.get("result"), list)
+            for r in step["result"]
+            if isinstance(r, dict) and "id" in r
+        }
+    )
+    async with db.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                """
+                INSERT INTO messages (session_id, role, content)
+                VALUES ($1::uuid, 'user', $2)
+                """,
+                session_id,
+                user_message,
+            )
+            assistant_msg = await conn.fetchrow(
+                """
+                INSERT INTO messages (session_id, role, content, citations)
+                VALUES ($1::uuid, 'assistant', $2, $3::jsonb)
+                RETURNING id
+                """,
+                session_id,
+                answer,
+                json.dumps(citations),
+            )
+            event = await conn.fetchrow(
+                """
+                INSERT INTO events (
+                    session_id, message_id, video_id, retrieved_chunk_ids,
+                    tool_calls, prompt_tokens, completion_tokens, total_tokens,
+                    latency_ms
+                )
+                VALUES ($1::uuid, $2, $3, $4, $5::jsonb, $6, $7, $8, $9)
+                RETURNING id
+                """,
+                session_id,
+                assistant_msg["id"],
+                video_id,
+                chunk_ids,
+                json.dumps(trace),
+                usage.get("prompt_tokens"),
+                usage.get("completion_tokens"),
+                usage.get("total_tokens"),
+                latency_ms,
+            )
+            await conn.execute(
+                "UPDATE sessions SET last_active_at = now() WHERE id = $1::uuid",
+                session_id,
+            )
+    return {"message_id": assistant_msg["id"], "event_id": event["id"]}
+
+
+async def set_message_feedback(
+    db: asyncpg.Pool, message_id: int, feedback: str
+) -> asyncpg.Record | None:
+    """Feedback lives on `events` (the analytics row), keyed by
+    `message_id`, but the frontend addresses it by message id since that's
+    what the user is reacting to in the chat transcript."""
+    return await db.fetchrow(
+        """
+        UPDATE events SET feedback = $2
+        WHERE message_id = $1
+        RETURNING id, message_id, feedback
+        """,
+        message_id,
+        feedback,
     )
