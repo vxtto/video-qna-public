@@ -5,13 +5,14 @@ transcript is correct, segment by segment, **and** now includes the real
 retrieval + agent path (semantic/keyword search, RRF-free hybrid via two
 tools, `fetch_window`, and a hand-rolled Hermes-style agent loop against
 DeepSeek V4 Flash) — built to be tested locally before it ever touches the
-VPS. See the repo's `CLAUDE.md` for the overall plan and decisions.
+VPS. See [`../PLAN.md`](../PLAN.md) for the overall plan and decisions,
+and [`CLAUDE.md`](CLAUDE.md) for local conventions/gotchas.
 
 ## Stack
 
 - `db` — Postgres w/ pgvector (`pgvector/pgvector:pg16`), schema applied
   from [`db/migrations/`](db/migrations) in order (numbered `.sql` files,
-  no ORM/Alembic — see CLAUDE.md's ORM decision).
+  no ORM/Alembic — see `CLAUDE.md`'s conventions).
 - `api` — FastAPI ([`backend/app/main.py`](backend/app/main.py)):
   - `GET /api/videos`, `GET /api/videos/{slug}` — video + segment metadata
   - `PATCH /api/segments/{id}` — mark a segment correct/incorrect, with an
@@ -37,11 +38,11 @@ VPS. See the repo's `CLAUDE.md` for the overall plan and decisions.
 - [`app/agent.py`](backend/app/agent.py) — the loop itself: model call →
   tool dispatch → append result → repeat until `final_answer`, capped at
   `MAX_TURNS`. No skills system, no sub-agents, no scheduling — intentionally
-  bare (see CLAUDE.md's Hermes decision).
+  bare (see `../PLAN.md`'s Hermes decision).
 - [`app/cli.py`](backend/app/cli.py) — local REPL for driving the loop
   without the frontend, e.g. `python -m app.cli tears-of-steel`.
-- No context-management policy (trim/summarize, CLAUDE.md risk #2) yet —
-  out of scope for this bare-loop pass, tracked as an open item.
+- No context-management policy (trim/summarize) yet — out of scope for
+  this bare-loop pass, tracked as feature priority #5 in `../PLAN.md`.
 
 ## Prerequisites
 
@@ -94,10 +95,11 @@ docker compose exec api python -m app.seed
 
 - Single hardcoded movie (Tears of Steel) in `seed.py`'s `MANIFEST` — add
   entries as the other 3 corpus videos come through the pipeline.
-- No auth — fine for local dev only, per CLAUDE.md risk #8 this needs a
+- No auth — fine for local dev only, per `../PLAN.md` this needs a
   shared token before anything touches a public VPS.
 - `/api/chat` is one-shot per call, no server-side session storage yet
-  (CLAUDE.md risk #4 — sessions/messages/events tables still an open item).
-- No HNSW/ivfflat index on `embedding` — exact scan, per CLAUDE.md risk #8
+  (`../PLAN.md` feature priority #6 — sessions/messages/events tables
+  still an open item).
+- No HNSW/ivfflat index on `embedding` — exact scan, per `../PLAN.md`
   (and pgvector's 2000-dim index cap wouldn't fit our 4096-dim vectors
   anyway).

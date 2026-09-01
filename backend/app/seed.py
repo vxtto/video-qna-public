@@ -35,7 +35,16 @@ MANIFEST = [
         "license": "CC-BY 3.0",
         "transcript_prefix": "tos",
     },
+    {
+        "slug": "cosmos-laundromat",
+        "title": "Cosmos Laundromat",
+        "filename": "cosmos_laundromat_480p.mp4",
+        "license": "CC-BY-SA 4.0",
+        "transcript_prefix": "cos",
+    },
 ]
+# Sita Sings the Blues / His Girl Friday not yet through the video-processing
+# pipeline — see ../../PLAN.md's "Known risks" #6 for corpus status.
 
 CHUNK_RE = re.compile(r"_(\d+)\.json$")
 
