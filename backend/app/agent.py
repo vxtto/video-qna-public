@@ -21,7 +21,7 @@ from .openrouter import chat, chat_stream
 
 log = logging.getLogger("agent")
 
-MAX_TURNS = 6  # hard stop so a confused model can't loop forever
+MAX_TURNS = 12  # hard stop so a confused model can't loop forever
 
 SYSTEM_PROMPT = """\
 You are a Q&A assistant for a video transcript. Answer only from what the \
