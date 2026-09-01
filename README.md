@@ -2,7 +2,7 @@
 
 Smallest thing that lets a human watch a movie in the browser and confirm
 its Whisper transcript is correct, segment by segment, before it's trusted
-for retrieval. Not the real RAG backend yet — see the repo's `CLAUDE.md`
+for retrieval. Not the real RAG backend yet — see [`../PLAN.md`](../PLAN.md)
 for the overall plan.
 
 ## Stack
@@ -50,7 +50,7 @@ docker compose exec api python -m app.seed
 
 - Single hardcoded movie (Tears of Steel) in `seed.py`'s `MANIFEST` — add
   entries as the other 3 corpus videos come through the pipeline.
-- No auth — fine for local dev only, per CLAUDE.md risk #8 this needs a
+- No auth — fine for local dev only, per `../PLAN.md` this needs a
   shared token before anything touches a public VPS.
 - No pgvector columns used yet — extension is enabled so the schema doesn't
   need a migration when embeddings show up.
