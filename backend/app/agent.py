@@ -41,10 +41,20 @@ citations list rather than guessing.
 
 
 class AgentResult:
-    def __init__(self, answer: str, citations: list[dict], trace: list[dict]):
+    def __init__(
+        self,
+        answer: str,
+        citations: list[dict],
+        trace: list[dict],
+        usage: dict | None = None,
+    ):
         self.answer = answer
         self.citations = citations
         self.trace = trace  # list of {tool, args, result} for debugging/analytics
+        # Summed prompt/completion/total tokens across every model call this
+        # turn made (can be >1 - each tool round-trip is its own call). Used
+        # for the per-turn analytics event, see PLAN.md feature priority #6.
+        self.usage = usage or {}
 
 
 async def run(
@@ -68,17 +78,20 @@ async def run(
     messages.append({"role": "user", "content": user_message})
 
     trace: list[dict] = []
+    usage_totals = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
     for turn in range(MAX_TURNS):
         result = await chat(messages, tools=tools.TOOL_SCHEMAS)
         message = result["message"]
         log.info("turn %d usage=%s", turn, result["usage"])
+        for key in usage_totals:
+            usage_totals[key] += result["usage"].get(key) or 0
 
         tool_calls = message.get("tool_calls") or []
         if not tool_calls:
             # Model didn't call a tool at all - treat its text as a
             # non-grounded fallback rather than silently dropping the turn.
-            return AgentResult(message.get("content") or "", [], trace)
+            return AgentResult(message.get("content") or "", [], trace, usage_totals)
 
         # Assistant turn must be appended before its tool results, exactly
         # as the API returned it (needed so tool_call_id round-trips).
@@ -94,7 +107,10 @@ async def run(
             if fn_name == "final_answer":
                 trace.append({"tool": fn_name, "args": args, "result": None})
                 return AgentResult(
-                    args.get("answer", ""), args.get("citations", []), trace
+                    args.get("answer", ""),
+                    args.get("citations", []),
+                    trace,
+                    usage_totals,
                 )
 
             try:
@@ -120,4 +136,5 @@ async def run(
         "or ask something more specific.",
         [],
         trace,
+        usage_totals,
     )
