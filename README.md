@@ -45,13 +45,19 @@ mkdir/cp steps above if no populated copy exists anywhere yet.
 ## Run it
 
 ```bash
-cp .env.example .env   # optional, defaults already work
-./scripts/dev-up.sh    # self-assigns free host ports, then docker compose up -d --build
+cp .env.example .env   # local config only, leave OPENROUTER_API_KEY blank
+../scripts/with-secrets.sh ./scripts/dev-up.sh   # self-assigns free host ports, then docker compose up -d --build
 ```
 
-Only one worktree's stack running on this box? Plain `docker compose up
---build` (foreground) still works fine — `dev-up.sh` only matters once
-you're running more than one at a time, see `PLAN.md`.
+Real key comes from `~/.config/video-qna/secrets.env` via `with-secrets.sh`,
+not a value typed into this worktree's `.env` — see `../PLAN.md`'s
+"Secrets management". `with-secrets.sh` just exports env vars before
+handing off, so it composes fine with `dev-up.sh`.
+
+Only one worktree's stack running on this box? Plain
+`../scripts/with-secrets.sh docker compose up --build` (foreground) still
+works fine — `dev-up.sh` only matters once you're running more than one at
+a time, see `PLAN.md`.
 
 First boot auto-seeds Postgres from `video-processing/data/transcripts/*.json`
 (see [`backend/app/seed.py`](backend/app/seed.py)) if the `videos` table is
