@@ -29,10 +29,18 @@ cp video-processing/data/raw/*_480p.mp4 data/media/raw/
 cp video-processing/data/transcripts/*.json data/media/transcripts/
 ```
 
-Running more than one worktree's stack on the same box? Point
-`MEDIA_HOST_DIR` in `.env` at one shared directory instead of repeating
-this per worktree — see `.env.example` and `PLAN.md`'s "Running several
-worktrees in parallel".
+**Working in a worktree under `../video-qna-worktrees/`, and the main
+checkout already has `data/media/` populated?** Don't recopy/reprocess —
+point at it:
+
+```bash
+echo "MEDIA_HOST_DIR=$(cd ../../video-qna && pwd)/data/media" >> .env
+```
+
+Then `./scripts/dev-up.sh` below. Same idea for pointing at *any* other
+worktree's already-populated copy — see `.env.example` and `PLAN.md`'s
+"Running several worktrees in parallel". Only fall back to the
+mkdir/cp steps above if no populated copy exists anywhere yet.
 
 ## Run it
 
