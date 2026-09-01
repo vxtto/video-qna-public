@@ -2,6 +2,7 @@ const picker = document.getElementById("video-picker");
 const player = document.getElementById("player");
 const segmentsEl = document.getElementById("segments");
 const progressEl = document.getElementById("progress");
+const movieTitleEl = document.getElementById("movie-title");
 
 let currentVideo = null;
 let segmentEls = new Map(); // segment id -> <li>
@@ -16,18 +17,24 @@ function fmt(ms) {
 async function loadVideoList() {
   const videos = await fetch("/api/videos").then((r) => r.json());
   picker.innerHTML = "";
+  if (!videos.length) {
+    movieTitleEl.textContent = "No movies available";
+    return;
+  }
   for (const v of videos) {
     const opt = document.createElement("option");
     opt.value = v.slug;
     opt.textContent = `${v.title} (${v.reviewed_count}/${v.segment_count} reviewed)`;
     picker.appendChild(opt);
   }
-  if (videos.length) await loadVideo(videos[0].slug);
+  await loadVideo(videos[0].slug);
 }
 
 async function loadVideo(slug) {
   const video = await fetch(`/api/videos/${slug}`).then((r) => r.json());
   currentVideo = video;
+  picker.value = video.slug;
+  movieTitleEl.textContent = video.title;
   player.src = `/media/${video.filename}`;
   renderSegments(video.segments);
 }
