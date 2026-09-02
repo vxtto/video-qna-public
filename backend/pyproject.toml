@@ -1,0 +1,8 @@
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+# Starter set: correctness/import hygiene only, not full style. Widen once
+# the codebase has been run through this once and the diff is reviewed.
+select = ["E", "F", "I"]

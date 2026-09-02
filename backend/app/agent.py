@@ -16,7 +16,7 @@ from typing import Any, AsyncIterator
 
 import asyncpg
 
-from . import queries, tools
+from . import tools
 from .openrouter import chat, chat_stream
 
 log = logging.getLogger("agent")
