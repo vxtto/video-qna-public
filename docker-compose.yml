@@ -58,5 +58,55 @@ services:
       # 0.0.0.0 without re-adding that intentionally.
       - "127.0.0.1:${API_PORT:-8000}:8000"
 
+  # Reverse proxy + GitHub OAuth — VPS/prod only. Gated behind the "prod"
+  # profile so plain `docker compose up` (every local worktree's command)
+  # never tries to start a public reverse proxy + OAuth login on someone's
+  # laptop. The VPS deploy is the only caller that opts in, via
+  # `docker compose --profile prod up -d` (see .github/workflows/deploy.yml).
+  # Config lives in infra/caddy/ (Caddyfile, static placeholder site) —
+  # see DEPLOY.md's "What's deployed" for why it's split into its own
+  # directory but this one file.
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    profiles: ["prod"]
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./infra/caddy/site:/srv/site:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - oauth2-proxy
+      # `api` is deliberately not listed here even though Caddy proxies to
+      # it — same Compose project/network either way, and listing it would
+      # make `docker compose --profile prod up -d` try to (re)create `api`
+      # too on every Caddy-only change. Caddy resolves it by service name
+      # at request time regardless of start order.
+
+  oauth2-proxy:
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.6.0
+    restart: unless-stopped
+    profiles: ["prod"]
+    environment:
+      OAUTH2_PROXY_PROVIDER: github
+      OAUTH2_PROXY_GITHUB_USER: vxtto
+      OAUTH2_PROXY_CLIENT_ID: ${OAUTH2_PROXY_CLIENT_ID}
+      OAUTH2_PROXY_CLIENT_SECRET: ${OAUTH2_PROXY_CLIENT_SECRET}
+      OAUTH2_PROXY_COOKIE_SECRET: ${OAUTH2_PROXY_COOKIE_SECRET}
+      OAUTH2_PROXY_COOKIE_SECURE: "true"
+      OAUTH2_PROXY_EMAIL_DOMAINS: "*"
+      OAUTH2_PROXY_HTTP_ADDRESS: "0.0.0.0:4180"
+      OAUTH2_PROXY_UPSTREAMS: "static://200"
+      OAUTH2_PROXY_REDIRECT_URL: "https://example.com/oauth2/callback"
+      OAUTH2_PROXY_WHITELIST_DOMAINS: ".example.com"
+      OAUTH2_PROXY_COOKIE_DOMAINS: ".example.com"
+      OAUTH2_PROXY_SET_XAUTHREQUEST: "true"
+
 volumes:
   pgdata:
+  caddy_data:
+  caddy_config:
