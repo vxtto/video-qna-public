@@ -1,27 +1,45 @@
-# docker-compose placeholder
+# video-qna
 
-Smallest thing that lets a human watch a movie in the browser and confirm
-its Whisper transcript is correct, segment by segment, before it's trusted
-for retrieval. Not the real RAG backend yet — see [`PLAN.md`](PLAN.md)
-for the overall plan.
+A RAG-based Q&A agent over movie/video transcripts: ask a question about a
+movie in plain English, get back a grounded answer with clickable
+`[MM:SS]` citations that seek the `<video>` element to the exact moment
+the model is quoting. See [`PLAN.md`](PLAN.md) for architecture/decisions
+and [`docs/STATUS.md`](docs/STATUS.md) for the day-to-day progress log.
+
+**Live**: https://example.com (GitHub OAuth-gated, `vxtto` only).
 
 ## Stack
 
-- `db` — Postgres w/ pgvector (`pgvector/pgvector:pg16`), schema in
-  [`db/init.sql`](db/init.sql).
-- `api` — FastAPI ([`backend/app/main.py`](backend/app/main.py)), serves:
+- `db` — Postgres + pgvector (`pgvector/pgvector:pg16`), schema/migrations
+  in [`db/migrations/`](db/migrations/): `videos`, `transcript_segments`
+  (embedding + full-text `tsv` columns), `sessions`/`messages`/`events`
+  for server-side chat history.
+- `api` — FastAPI ([`backend/app/main.py`](backend/app/main.py)):
   - `GET /api/videos`, `GET /api/videos/{slug}` — video + segment metadata
-  - `PATCH /api/segments/{id}` — mark a segment correct/incorrect, with an
-    optional corrected-text field
-  - `/media/*` — the raw mp4, via `StaticFiles` (supports HTTP Range, so
-    `<video>` seeking works)
-  - `/` — the plain HTML/JS frontend in `backend/static/`, no build step
+  - `PATCH /api/segments/{id}` — mark a transcript segment correct/incorrect
+  - `POST /api/chat` / `POST /api/chat/stream` — ask the agent a question
+    (non-streaming and SSE-streaming variants; the frontend uses the
+    streaming one, live tool-call-by-tool-call)
+  - `GET /api/sessions/{id}` — replay a chat session's history
+  - `PATCH /api/messages/{id}/feedback` — thumbs up/down on an answer
+  - `/media/*` — the mp4s, via Range-request streaming (so `<video>`
+    seeking works)
+  - `/` — static HTML/JS frontend in `backend/static/`, no build step:
+    movie dropdown, video player + transcript pane, and a chat pane that
+    streams tool calls (`🔧 semantic_search`, `keyword_search`,
+    `fetch_window`) live before the grounded, cited answer lands
+- **Agent** ([`backend/app/agent.py`](backend/app/agent.py)) — hand-rolled
+  Hermes-style loop (model call → tool dispatch → repeat, ~150 lines) over
+  DeepSeek V4 Flash. Must close every turn via a `final_answer` tool call
+  carrying structured citations; never answers in plain text. `MAX_TURNS`
+  is 12 — verified real multi-hop questions need most of that budget, 6
+  was too tight and caused false "couldn't find an answer" fallbacks.
 
 ## Prerequisites
 
-This mounts `data/media/` (gitignored, not `video-processing/data/` — see
-[`video-processing/README.md`](video-processing/README.md) for the
-distinction) as a read-only volume. Populate it before first boot:
+Mounts `data/media/` (gitignored — curated 480p mp4s + transcript JSON,
+**not** `video-processing/data/`, which is the pipeline's full working
+directory of raw sources/audio/chunks). Populate it before first boot:
 
 ```bash
 mkdir -p data/media/raw data/media/transcripts
@@ -29,52 +47,73 @@ cp video-processing/data/raw/*_480p.mp4 data/media/raw/
 cp video-processing/data/transcripts/*.json data/media/transcripts/
 ```
 
-**Working in a worktree under `../video-qna-worktrees/`, and the main
-checkout already has `data/media/` populated?** Don't recopy/reprocess —
-point at it:
+**Already have another worktree/checkout with `data/media/` populated?**
+Don't recopy — point at it instead:
 
 ```bash
-echo "MEDIA_HOST_DIR=$(cd ../../video-qna && pwd)/data/media" >> .env
+echo "MEDIA_HOST_DIR=/absolute/path/to/that/checkout/data/media" >> .env
 ```
 
-Then `./scripts/dev-up.sh` below. Same idea for pointing at *any* other
-worktree's already-populated copy — see `.env.example` and `PLAN.md`'s
-"Running several worktrees in parallel". Only fall back to the
-mkdir/cp steps above if no populated copy exists anywhere yet.
+See `.env.example` and `PLAN.md`'s "Running several worktrees in
+parallel" for the full mechanism (`scripts/dev-up.sh` self-assigns free
+host ports too, so multiple checkouts of this repo can run their stacks
+on one box at once without colliding).
 
 ## Run it
 
 ```bash
 cp .env.example .env   # local config only, leave OPENROUTER_API_KEY blank
-../scripts/with-secrets.sh ./scripts/dev-up.sh   # self-assigns free host ports, then docker compose up -d --build
 ```
 
-Real key comes from `~/.config/video-qna/secrets.env` via `with-secrets.sh`,
-not a value typed into this worktree's `.env` — see `../PLAN.md`'s
-"Secrets management". `with-secrets.sh` just exports env vars before
-handing off, so it composes fine with `dev-up.sh`.
+The real key lives in one place, outside every checkout of this repo:
+`~/.config/video-qna/secrets.env` (see `PLAN.md`'s "Secrets management").
+Load it via `with-secrets.sh`, wherever your `video-qna-worktrees/`
+checkout is relative to this one, e.g.:
 
-Only one worktree's stack running on this box? Plain
-`../scripts/with-secrets.sh docker compose up --build` (foreground) still
-works fine — `dev-up.sh` only matters once you're running more than one at
-a time, see `PLAN.md`.
+```bash
+../video-qna-worktrees/scripts/with-secrets.sh ./scripts/dev-up.sh
+```
 
-First boot auto-seeds Postgres from `video-processing/data/transcripts/*.json`
-(see [`backend/app/seed.py`](backend/app/seed.py)) if the `videos` table is
-empty. Then open the URL `dev-up.sh` printed (or http://localhost:8000 if
-you ran compose directly).
+(If this checkout *is* nested under `video-qna-worktrees/`, as every
+feature worktree is, that's just `../scripts/with-secrets.sh
+./scripts/dev-up.sh`.) `dev-up.sh` self-assigns free `DB_PORT`/`API_PORT`
+into `.env` on first run and prints the URL. Only one stack running on
+this box? Plain `with-secrets.sh docker compose up --build` (foreground)
+works too — `dev-up.sh` only matters once you're running more than one at
+a time.
 
-To re-seed after editing the manifest in `seed.py`:
+First boot auto-seeds Postgres from `data/media/transcripts/*.json` (see
+[`backend/app/seed.py`](backend/app/seed.py)) if the `videos` table is
+empty. Then backfill embeddings once (needed for `semantic_search` — the
+agent degrades to keyword-only retrieval without it):
+
+```bash
+docker compose exec api python -m app.embed_segments
+```
+
+To re-seed after editing `seed.py`'s `MANIFEST` (idempotent, safe to
+re-run):
 
 ```bash
 docker compose exec api python -m app.seed
 ```
 
-## Known placeholder-ness
+## Deploying
 
-- Single hardcoded movie (Tears of Steel) in `seed.py`'s `MANIFEST` — add
-  entries as the other 3 corpus videos come through the pipeline.
-- No auth — fine for local dev only, per `PLAN.md` this needs a
-  shared token before anything touches a public VPS.
-- No pgvector columns used yet — extension is enabled so the schema doesn't
-  need a migration when embeddings show up.
+See [`DEPLOY.md`](DEPLOY.md) for the VPS layout, Caddy/oauth2-proxy
+setup, and the full "pushing a new deploy" steps.
+
+## Status
+
+- **Corpus**: Tears of Steel ✅, Cosmos Laundromat ✅ (both seeded +
+  embedded, locally and on the VPS). Sita Sings the Blues ⬜, His Girl
+  Friday ⬜ — not yet processed.
+- **Citations**: working end-to-end, verified against a live query on
+  production itself, not just locally.
+- **No auth on the app itself** — the VPS deploy relies entirely on
+  oauth2-proxy in front of it (GitHub OAuth, single allowed user); running
+  this locally with no reverse proxy means no auth at all, dev-only.
+- **Not started yet**: content chaptering, reranker/HNSW index
+  (deliberately deferred — corpus is small enough that exact scan is
+  instant), an eval harness. See `PLAN.md`'s Feature priorities for the
+  full list and reasoning.
