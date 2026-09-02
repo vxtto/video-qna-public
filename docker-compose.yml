@@ -51,8 +51,12 @@ services:
       # worktrees" / "Running several worktrees in parallel".
       - ${MEDIA_HOST_DIR:-./data/media}:/data/media:ro
     ports:
-      # See db's port comment above — same reasoning.
-      - "${API_PORT:-8000}:8000"
+      # Bound to localhost only — matches the fix applied directly on the
+      # VPS on 2026-09-02 (see docs/STATUS.md) that had never made it back
+      # into this file. Public access goes through Caddy's reverse proxy
+      # + oauth2-proxy, not this port directly; don't widen it back to
+      # 0.0.0.0 without re-adding that intentionally.
+      - "127.0.0.1:${API_PORT:-8000}:8000"
 
 volumes:
   pgdata:
