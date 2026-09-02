@@ -61,6 +61,20 @@ jobs:
             echo "applying $f"
             psql -h localhost -U postgres -d video_qna -f "$f"
           done
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install psycopg2-binary
+      - name: Check docs/SCHEMA.md is up to date
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/video_qna
+        run: |
+          python3 scripts/gen-schema-doc.py
+          if ! git diff --exit-code -- docs/SCHEMA.md; then
+            echo "::error::docs/SCHEMA.md is stale — run" \
+              "'DATABASE_URL=... python3 scripts/gen-schema-doc.py' and commit the result."
+            exit 1
+          fi
 
   compose-smoke:
     runs-on: ubuntu-latest
