@@ -367,20 +367,25 @@ async def search_chapters(
 # ---------------------------------------------------------------------------
 
 
-async def create_session(db: asyncpg.Pool, video_id: int | None) -> asyncpg.Record:
+async def create_session(db: asyncpg.Pool, video_id: int | None, owner: str) -> asyncpg.Record:
     return await db.fetchrow(
         """
-        INSERT INTO sessions (video_id)
-        VALUES ($1)
-        RETURNING id, video_id, created_at, last_active_at
+        INSERT INTO sessions (video_id, owner)
+        VALUES ($1, $2)
+        RETURNING id, video_id, owner, created_at, last_active_at
         """,
         video_id,
+        owner,
     )
 
 
-async def get_session(db: asyncpg.Pool, session_id: str) -> asyncpg.Record | None:
+async def get_session(db: asyncpg.Pool, session_id: str, owner: str) -> asyncpg.Record | None:
+    """Scoped to `owner` so one user can never fetch (or replay history
+    into) another user's session - a mismatched owner looks identical to a
+    nonexistent session to the caller (main.py turns both into a 404),
+    rather than leaking that the id belongs to someone else."""
     return await db.fetchrow(
-        "SELECT * FROM sessions WHERE id = $1::uuid", session_id
+        "SELECT * FROM sessions WHERE id = $1::uuid AND owner = $2", session_id, owner
     )
 
 

@@ -16,13 +16,14 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import asyncpg
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.responses import Response, StreamingResponse
 
 from . import agent, queries
+from .auth import get_current_user
 from .db import close_pool, get_pool
 from .seed import main as seed_main
 
@@ -108,11 +109,17 @@ def _parse_citations(raw: str | None) -> list[dict] | None:
     return json.loads(raw) if raw else None
 
 
-async def _resolve_session(pool: asyncpg.Pool, body: ChatRequest) -> tuple[str, int | None]:
+async def _resolve_session(
+    pool: asyncpg.Pool, body: ChatRequest, owner: str
+) -> tuple[str, int | None]:
     """Shared by /api/chat and /api/chat/stream: find-or-create the session
-    for this request, return (session_id, video_id)."""
+    for this request, return (session_id, video_id). `owner` (the caller's
+    GitHub login, from Caddy's X-Auth-Request-User - see app/auth.py)
+    scopes both paths: an existing session_id that belongs to someone else
+    404s exactly like one that doesn't exist, and a newly created session
+    is stamped with it."""
     if body.session_id is not None:
-        session = await queries.get_session(pool, str(body.session_id))
+        session = await queries.get_session(pool, str(body.session_id), owner)
         if session is None:
             raise HTTPException(404, "session not found")
         video_id = session["video_id"]
@@ -123,12 +130,12 @@ async def _resolve_session(pool: asyncpg.Pool, body: ChatRequest) -> tuple[str, 
             if video is None:
                 raise HTTPException(404, "video not found")
             video_id = video["id"]
-        session = await queries.create_session(pool, video_id)
+        session = await queries.create_session(pool, video_id, owner)
     return str(session["id"]), video_id
 
 
 @app.post("/api/chat")
-async def chat(body: ChatRequest):
+async def chat(body: ChatRequest, current_user: str = Depends(get_current_user)):
     """Wires the bare agent loop (app/agent.py) into the API, now with
     server-side session storage (PLAN.md feature priority #6): every turn
     is persisted as a `messages` row pair + an `events` analytics row, and
@@ -140,7 +147,7 @@ async def chat(body: ChatRequest):
     call + the final answer) is done. See POST /api/chat/stream below for
     the version that renders tool calls as they happen."""
     pool = await get_pool()
-    session_id, video_id = await _resolve_session(pool, body)
+    session_id, video_id = await _resolve_session(pool, body, current_user)
 
     history_rows = await queries.list_messages(pool, session_id)
     history = [{"role": r["role"], "content": r["content"]} for r in history_rows]
@@ -189,7 +196,7 @@ def _sse(event: str, data: dict) -> str:
 
 
 @app.post("/api/chat/stream")
-async def chat_stream(body: ChatRequest):
+async def chat_stream(body: ChatRequest, current_user: str = Depends(get_current_user)):
     """SSE twin of /api/chat: same session/history/persistence plumbing
     (via `_resolve_session`, shared with /api/chat), but driven through
     `agent.run_stream` and forwarded to the client as Server-Sent Events -
@@ -216,7 +223,7 @@ async def chat_stream(body: ChatRequest):
     loop finishes, right before the `final` event.
     """
     pool = await get_pool()
-    session_id, video_id = await _resolve_session(pool, body)
+    session_id, video_id = await _resolve_session(pool, body, current_user)
 
     history_rows = await queries.list_messages(pool, session_id)
     history = [{"role": r["role"], "content": r["content"]} for r in history_rows]
@@ -302,9 +309,9 @@ async def chat_stream(body: ChatRequest):
 
 
 @app.get("/api/sessions/{session_id}")
-async def get_session_transcript(session_id: str):
+async def get_session_transcript(session_id: str, current_user: str = Depends(get_current_user)):
     pool = await get_pool()
-    session = await queries.get_session(pool, session_id)
+    session = await queries.get_session(pool, session_id, current_user)
     if session is None:
         raise HTTPException(404, "session not found")
     messages = await queries.list_messages(pool, session_id)
