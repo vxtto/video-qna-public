@@ -63,14 +63,22 @@ async def chat(
     *,
     tools: list[dict] | None = None,
     tool_choice: str | dict | None = None,
+    response_format: dict | None = None,
     model: str | None = None,
 ) -> dict:
     """One DeepSeek chat-completions call. Returns the raw `message` object
-    (may contain `tool_calls` or plain `content`)."""
+    (may contain `tool_calls` or plain `content`).
+
+    `response_format` is DeepSeek's structured-outputs param (JSON schema,
+    per CLAUDE.md's core stack decisions) — used by app/generate_chapters.py
+    for a plain (no tool-calling) call that must come back as strict JSON,
+    mutually exclusive with `tools` in practice (nothing here needs both)."""
     body: dict = {"model": model or LLM_MODEL, "messages": messages}
     if tools:
         body["tools"] = tools
         body["tool_choice"] = tool_choice or "auto"
+    if response_format:
+        body["response_format"] = response_format
 
     resp = None
     for attempt in range(1, _MAX_ATTEMPTS + 1):

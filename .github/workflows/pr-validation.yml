@@ -87,6 +87,13 @@ jobs:
       # Job-level, not step-level — docker compose down (teardown step)
       # needs to re-interpolate this too, not just the up step.
       OPENROUTER_API_KEY: ci-dummy-key-not-a-real-secret
+      # DB_PORT/API_PORT became required (no silent default) in
+      # docker-compose.yml on 2026-09-03 to force local dev through
+      # scripts/dev-up.sh — CI has no worktree/.env, so it needs these
+      # supplied directly. Single throwaway instance, no collision risk,
+      # so the plain defaults are fine here.
+      DB_PORT: "5432"
+      API_PORT: "8000"
     steps:
       - uses: actions/checkout@v4
       - name: Bring up db + api with dummy secrets

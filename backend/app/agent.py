@@ -16,7 +16,7 @@ from typing import Any, AsyncIterator
 
 import asyncpg
 
-from . import tools
+from . import queries, tools
 from .openrouter import chat, chat_stream
 
 log = logging.getLogger("agent")
@@ -28,18 +28,63 @@ You are a Q&A assistant for a video transcript. Answer only from what the \
 tools return - never invent dialogue or events.
 
 Tools:
-- semantic_search: meaning/theme queries.
-- keyword_search: exact names, quotes, specific words.
+- semantic_search: meaning/theme queries over transcript segments - use \
+this to find the exact segments to ground and cite your answer with.
+- keyword_search: exact names, quotes, specific words - same grounding \
+role as semantic_search, for exact-wording queries instead of thematic ones.
 - fetch_window: transcript around a specific timestamp (for "what happens \
-after/before T", or to expand context around a hit you already found).
+after/before T", or to expand context around a hit you already found) - \
+also a grounding tool.
+- search_chapters: meaning search over a movie's named chapters (coarser, \
+topic/scene-level, NOT individual transcript lines) - for structure/\
+outline/navigation questions like "what's the second act about" or "which \
+part talks about X". Never cite a chapter directly - once you know which \
+part of the movie is relevant, follow up with semantic_search/\
+keyword_search (optionally narrowed to that chapter's time range via \
+fetch_window) to find the actual segments to cite.
+
+semantic_search, keyword_search, and search_chapters all take an optional \
+`video` argument (a movie's slug or title) to restrict the call to one \
+movie. Pass it whenever the user names a specific movie and the \
+conversation isn't already about a single one - otherwise you'll search \
+across every movie in the corpus, not just the one asked about.
 
 Call one or more of these as needed, then you MUST finish by calling \
 final_answer with a grounded answer and structured citations \
-(chunk_id, video_id, start_ms) pointing at the segments you actually used. \
-Never answer in plain text - always finish via final_answer. If the tools \
-don't support an answer, say so honestly in final_answer with an empty \
-citations list rather than guessing.
+(chunk_id, video_id, start_ms) pointing at transcript segments you \
+actually retrieved via semantic_search/keyword_search/fetch_window - never \
+a chapter id. Never answer in plain text - always finish via final_answer. \
+If the tools don't support an answer, say so honestly in final_answer with \
+an empty citations list rather than guessing.
 """
+
+_NO_ACTIVE_VIDEO_NOTE = (
+    "\nNo movie is currently active for this conversation - if the user "
+    "doesn't name one, pass the `video` argument once they do, or ask them "
+    "which movie they mean rather than guessing."
+)
+
+
+def _build_system_prompt(active_video: asyncpg.Record | None) -> str:
+    """The static SYSTEM_PROMPT plus a note on which movie (if any) this
+    conversation is already scoped to. Without this, the model has no way
+    to know `default_video_id` exists - `tools.dispatch` would happily fall
+    back to it, but the model would still ask the user to name a movie
+    it's already looking at (e.g. the one currently loaded in the web
+    player), since the tool schemas only describe `video` as optional, not
+    as already resolved. Told explicitly, the model can and does search
+    without a `video` arg (dispatch falls back to `default_video_id`) or
+    pass an *other* movie's name if the user explicitly asks about one."""
+    if active_video is None:
+        return SYSTEM_PROMPT + _NO_ACTIVE_VIDEO_NOTE
+    return SYSTEM_PROMPT + (
+        f"\nThis conversation is currently scoped to the movie "
+        f"\"{active_video['title']}\" (slug: {active_video['slug']}) - the "
+        f"one the user has open in the web player. Omit the `video` "
+        f"argument on semantic_search/keyword_search/search_chapters to "
+        f"search it by default. Only pass `video` when the user explicitly "
+        f"asks about a *different* named movie."
+    )
 
 
 class AgentResult:
@@ -77,7 +122,8 @@ async def run(
     intentionally NOT in this bare loop yet - out of scope for the local
     functionality test, see CLAUDE.md open questions.
     """
-    messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
+    active_video = await queries.get_video_by_id(db, video_id) if video_id else None
+    messages: list[dict] = [{"role": "system", "content": _build_system_prompt(active_video)}]
     messages.extend(history or [])
     messages.append({"role": "user", "content": user_message})
 
@@ -233,7 +279,8 @@ async def run_stream(
     `_partial_string_field` as its tool-call arguments arrive, plus the
     rare plain-text fallback turn (no tool call at all - see `run()`).
     """
-    messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
+    active_video = await queries.get_video_by_id(db, video_id) if video_id else None
+    messages: list[dict] = [{"role": "system", "content": _build_system_prompt(active_video)}]
     messages.extend(history or [])
     messages.append({"role": "user", "content": user_message})
 

@@ -44,6 +44,25 @@ async def get_video_by_id(db: asyncpg.Pool, video_id: int) -> asyncpg.Record | N
     return await db.fetchrow("SELECT * FROM videos WHERE id = $1", video_id)
 
 
+async def resolve_video_ref(db: asyncpg.Pool, ref: str) -> int | None:
+    """Resolve a movie named in a tool call (`semantic_search`'s/
+    `keyword_search`'s/`search_chapters`'s optional `video` arg) to a
+    video id — exact slug match first, then a fuzzy title match, so the
+    model can say either "tears-of-steel" or "Tears of Steel". Returns
+    None if nothing matches (caller surfaces that to the model rather
+    than silently searching every video)."""
+    row = await db.fetchrow(
+        """
+        SELECT id FROM videos
+        WHERE slug = $1 OR title ILIKE '%' || $1 || '%'
+        ORDER BY (slug = $1) DESC
+        LIMIT 1
+        """,
+        ref,
+    )
+    return row["id"] if row else None
+
+
 async def list_segments(db: asyncpg.Pool, video_id: int) -> list[asyncpg.Record]:
     return await db.fetch(
         """
@@ -250,6 +269,96 @@ async def fetch_window(
         video_id,
         timestamp_ms - before_ms,
         timestamp_ms + after_ms,
+    )
+
+
+# ---------------------------------------------------------------------------
+# chapters (PLAN.md feature priority #2) — a coarser, navigational layer
+# sibling to transcript_segments. Queried separately (own table, own
+# embedding column) from transcripts: chapters are for high-level
+# retrieval/navigation, transcript_segments stay the only thing
+# final_answer ever cites. See CLAUDE.md / db/migrations/0004_chapters.sql.
+# ---------------------------------------------------------------------------
+
+
+async def list_chapters(db: asyncpg.Pool, video_id: int) -> list[asyncpg.Record]:
+    return await db.fetch(
+        """
+        SELECT id, video_id, seq, title, summary, start_ms, end_ms
+        FROM chapters
+        WHERE video_id = $1
+        ORDER BY seq
+        """,
+        video_id,
+    )
+
+
+async def replace_chapters(
+    db: asyncpg.Pool, video_id: int, rows: list[tuple[Any, ...]]
+) -> None:
+    """rows: (video_id, seq, title, summary, start_ms, end_ms) tuples."""
+    async with db.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute("DELETE FROM chapters WHERE video_id = $1", video_id)
+            await conn.executemany(
+                """
+                INSERT INTO chapters (video_id, seq, title, summary, start_ms, end_ms)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                """,
+                rows,
+            )
+
+
+async def chapters_missing_embedding(
+    db: asyncpg.Pool, limit: int = 64
+) -> list[asyncpg.Record]:
+    return await db.fetch(
+        """
+        SELECT id, title || '. ' || summary AS text
+        FROM chapters
+        WHERE embedding IS NULL
+        ORDER BY id
+        LIMIT $1
+        """,
+        limit,
+    )
+
+
+async def set_chapter_embedding(
+    db: asyncpg.Pool, chapter_id: int, embedding: list[float]
+) -> None:
+    await db.execute(
+        "UPDATE chapters SET embedding = $2 WHERE id = $1",
+        chapter_id,
+        _vector_literal(embedding),
+    )
+
+
+async def search_chapters(
+    db: asyncpg.Pool,
+    query_embedding: list[float],
+    *,
+    video_id: int | None = None,
+    k: int = 5,
+) -> list[asyncpg.Record]:
+    """Semantic search over chapter title+summary — high-level/navigational,
+    the chapters counterpart to `semantic_search` over transcript_segments.
+    Same exact-scan-no-ANN-index reasoning as that function."""
+    return await db.fetch(
+        """
+        SELECT c.id, c.video_id, c.seq, c.title, c.summary, c.start_ms, c.end_ms,
+               v.slug AS video_slug, v.title AS video_title,
+               (c.embedding <=> $1) AS distance
+        FROM chapters c
+        JOIN videos v ON v.id = c.video_id
+        WHERE c.embedding IS NOT NULL
+          AND ($2::int IS NULL OR c.video_id = $2)
+        ORDER BY c.embedding <=> $1
+        LIMIT $3
+        """,
+        _vector_literal(query_embedding),
+        video_id,
+        k,
     )
 
 
