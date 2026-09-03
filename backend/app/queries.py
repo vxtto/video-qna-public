@@ -366,6 +366,20 @@ async def record_turn(
     return {"message_id": assistant_msg["id"], "event_id": event["id"]}
 
 
+async def record_failed_turn(db: asyncpg.Pool, *, session_id: str, user_message: str) -> None:
+    """Persists just the user's message when the agent loop/model call fails
+    before `record_turn` can run - the fix for the "message vanishes
+    silently" regression (memory/no-test-suite-openrouter-failure-handling):
+    a mid-turn OpenRouter drop used to mean the user's question was never
+    saved, even though the user believes they asked something. No assistant
+    message/event row is written here - there's no answer to attach one to."""
+    await db.execute(
+        "INSERT INTO messages (session_id, role, content) VALUES ($1::uuid, 'user', $2)",
+        session_id,
+        user_message,
+    )
+
+
 async def set_message_feedback(
     db: asyncpg.Pool, message_id: int, feedback: str
 ) -> asyncpg.Record | None:

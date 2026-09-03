@@ -6,13 +6,27 @@ everything, same as the transcription step in video-processing.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import os
 from typing import AsyncIterator
 
 import httpx
 
+log = logging.getLogger("openrouter")
+
 BASE_URL = "https://openrouter.ai/api/v1"
+
+# OpenRouter routes DeepSeek calls across Groq/DeepInfra/Together under the
+# hood (see PLAN.md) - a transient backend-routing disconnect is an expected
+# condition of this provider setup, not a rare fluke (reproduced twice, both
+# RemoteProtocolError and ConnectError, in one short live session - see
+# memory/no-test-suite-openrouter-failure-handling). One retry with a short
+# backoff catches most of those without hiding a genuine outage.
+_TRANSIENT_ERRORS = (httpx.RemoteProtocolError, httpx.ConnectError, httpx.ReadTimeout)
+_MAX_ATTEMPTS = 2
+_RETRY_BACKOFF_S = 0.5
 
 API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "qwen/qwen3-embedding-8b")
@@ -57,10 +71,25 @@ async def chat(
     if tools:
         body["tools"] = tools
         body["tool_choice"] = tool_choice or "auto"
-    async with httpx.AsyncClient(timeout=120) as client:
-        resp = await client.post(
-            f"{BASE_URL}/chat/completions", headers=_HEADERS, json=body
-        )
+
+    resp = None
+    for attempt in range(1, _MAX_ATTEMPTS + 1):
+        try:
+            async with httpx.AsyncClient(timeout=120) as client:
+                resp = await client.post(
+                    f"{BASE_URL}/chat/completions", headers=_HEADERS, json=body
+                )
+            break
+        except _TRANSIENT_ERRORS:
+            if attempt == _MAX_ATTEMPTS:
+                raise
+            log.warning(
+                "openrouter chat transient failure (attempt %d/%d), retrying",
+                attempt,
+                _MAX_ATTEMPTS,
+                exc_info=True,
+            )
+            await asyncio.sleep(_RETRY_BACKOFF_S)
     if resp.status_code >= 400:
         raise RuntimeError(f"OpenRouter {resp.status_code}: {resp.text[:2000]}")
     payload = resp.json()
@@ -92,19 +121,42 @@ async def chat_stream(
     if tools:
         body["tools"] = tools
         body["tool_choice"] = tool_choice or "auto"
-    async with httpx.AsyncClient(timeout=120) as client:
-        async with client.stream(
-            "POST", f"{BASE_URL}/chat/completions", headers=_HEADERS, json=body
-        ) as resp:
-            if resp.status_code >= 400:
-                body_bytes = await resp.aread()
-                raise RuntimeError(
-                    f"OpenRouter {resp.status_code}: {body_bytes[:2000]!r}"
-                )
-            async for line in resp.aiter_lines():
-                if not line.startswith("data:"):
-                    continue  # blank lines / OpenRouter ": keep-alive" comments
-                data = line[len("data:") :].strip()
-                if data == "[DONE]":
-                    break
-                yield json.loads(data)
+
+    for attempt in range(1, _MAX_ATTEMPTS + 1):
+        yielded_any = False
+        try:
+            async with httpx.AsyncClient(timeout=120) as client:
+                async with client.stream(
+                    "POST", f"{BASE_URL}/chat/completions", headers=_HEADERS, json=body
+                ) as resp:
+                    if resp.status_code >= 400:
+                        body_bytes = await resp.aread()
+                        raise RuntimeError(
+                            f"OpenRouter {resp.status_code}: {body_bytes[:2000]!r}"
+                        )
+                    async for line in resp.aiter_lines():
+                        if not line.startswith("data:"):
+                            continue  # blank lines / OpenRouter ": keep-alive" comments
+                        data = line[len("data:") :].strip()
+                        if data == "[DONE]":
+                            return
+                        yielded_any = True
+                        yield json.loads(data)
+            return
+        except _TRANSIENT_ERRORS:
+            # Only safe to retry if nothing has reached the caller yet -
+            # once we've yielded partial content, a transparent retry would
+            # replay/duplicate it. A mid-stream drop after that point still
+            # propagates immediately, same as before (main.py's caller
+            # persists what it has and surfaces a clean error - see
+            # memory/no-test-suite-openrouter-failure-handling).
+            if yielded_any or attempt == _MAX_ATTEMPTS:
+                raise
+            log.warning(
+                "openrouter chat_stream transient failure before first chunk "
+                "(attempt %d/%d), retrying",
+                attempt,
+                _MAX_ATTEMPTS,
+                exc_info=True,
+            )
+            await asyncio.sleep(_RETRY_BACKOFF_S)

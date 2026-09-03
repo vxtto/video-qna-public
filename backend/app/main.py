@@ -141,7 +141,21 @@ async def chat(body: ChatRequest):
     history = [{"role": r["role"], "content": r["content"]} for r in history_rows]
 
     started = time.monotonic()
-    result = await agent.run(pool, body.message, video_id=video_id, history=history)
+    try:
+        result = await agent.run(pool, body.message, video_id=video_id, history=history)
+    except Exception:
+        # Regression guard (memory/no-test-suite-openrouter-failure-handling):
+        # an OpenRouter transport failure mid-agent-loop (e.g.
+        # httpx.RemoteProtocolError, reproduced live) used to propagate as a
+        # bare unhandled 500 with a full stack trace, and the user's message
+        # was never persisted anywhere. Now: a clean error response, and the
+        # message isn't silently lost.
+        log.exception("agent.run failed")
+        try:
+            await queries.record_failed_turn(pool, session_id=session_id, user_message=body.message)
+        except Exception:
+            log.exception("failed to persist user message after agent failure")
+        raise HTTPException(502, "The assistant is temporarily unavailable. Please try again.")
     latency_ms = int((time.monotonic() - started) * 1000)
 
     persisted = await queries.record_turn(
@@ -236,6 +250,15 @@ async def chat_stream(body: ChatRequest):
                     usage = event["usage"]
         except Exception as exc:  # noqa: BLE001 - surface to the client, not a 500 mid-stream
             log.exception("chat stream failed")
+            # Regression guard (memory/no-test-suite-openrouter-failure-handling):
+            # record_turn only runs after the try block succeeds, so a
+            # mid-stream OpenRouter drop used to mean the user's message was
+            # never persisted - silently vanishing from history even though
+            # the user believes they asked something. Save at least that much.
+            try:
+                await queries.record_failed_turn(pool, session_id=session_id, user_message=body.message)
+            except Exception:
+                log.exception("failed to persist user message after stream failure")
             yield _sse("error", {"error": str(exc)})
             return
 
