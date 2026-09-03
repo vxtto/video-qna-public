@@ -424,4 +424,180 @@ function finalizeAgentReply(entry, result) {
   }
 
   chatLog.scrollTop = chatLog.scrollHeight;
+  refreshTrayIfOpen();
 }
+
+// --- old-chats tray + new-chat button -----------------------------------
+// Sessions are already scoped per logged-in user server-side (owner column,
+// stamped from Caddy's X-Auth-Request-User - see backend/app/auth.py), so
+// GET /api/sessions just needs no video_slug filter to list *all* of this
+// user's chats across every movie - each row carries its own video_title/
+// video_slug so the tray can show that as a badge and switch the picker
+// when a session for a different movie is opened.
+
+const trayToggle = document.getElementById("tray-toggle");
+const trayClose = document.getElementById("tray-close");
+const trayBackdrop = document.getElementById("tray-backdrop");
+const chatTray = document.getElementById("chat-tray");
+const trayList = document.getElementById("tray-list");
+const newChatBtn = document.getElementById("new-chat-btn");
+
+function openTray() {
+  chatTray.hidden = false;
+  trayBackdrop.hidden = false;
+  trayToggle.classList.add("active");
+  localStorage.setItem("chat-tray-open", "1");
+  loadSessions();
+}
+
+function closeTray() {
+  chatTray.hidden = true;
+  trayBackdrop.hidden = true;
+  trayToggle.classList.remove("active");
+  localStorage.setItem("chat-tray-open", "0");
+}
+
+trayToggle.addEventListener("click", () => (chatTray.hidden ? openTray() : closeTray()));
+trayClose.addEventListener("click", closeTray);
+trayBackdrop.addEventListener("click", closeTray);
+
+function refreshTrayIfOpen() {
+  if (!chatTray.hidden) loadSessions();
+}
+
+function startNewChat() {
+  chatSessionId = null;
+  chatLog.innerHTML = "";
+  chatInput.focus();
+  highlightActiveTrayItem();
+}
+
+newChatBtn.addEventListener("click", startNewChat);
+
+async function loadSessions() {
+  trayList.innerHTML = `<li class="tray-empty">Loading…</li>`;
+  let sessions;
+  try {
+    sessions = await fetch("/api/sessions").then((r) => {
+      if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+      return r.json();
+    });
+  } catch (err) {
+    trayList.innerHTML = `<li class="tray-error">Couldn't load chats: ${err.message}</li>`;
+    return;
+  }
+
+  if (!sessions.length) {
+    trayList.innerHTML = `<li class="tray-empty">No chats yet - ask something to start one.</li>`;
+    return;
+  }
+
+  trayList.innerHTML = "";
+  for (const [label, group] of groupByRecency(sessions)) {
+    if (!group.length) continue;
+    const heading = document.createElement("li");
+    heading.className = "tray-group-label";
+    heading.textContent = label;
+    trayList.appendChild(heading);
+
+    for (const s of group) {
+      trayList.appendChild(renderTrayItem(s));
+    }
+  }
+}
+
+function renderTrayItem(s) {
+  const li = document.createElement("li");
+  li.className = "tray-item" + (s.id === chatSessionId ? " active" : "");
+  li.dataset.sessionId = s.id;
+
+  const title = document.createElement("div");
+  title.className = "tray-title";
+  title.textContent = s.title || "(untitled chat)";
+
+  const meta = document.createElement("div");
+  meta.className = "tray-meta";
+  const video = document.createElement("span");
+  video.className = "tray-video";
+  video.textContent = s.video_title || "(no movie)";
+  const time = document.createElement("span");
+  time.className = "tray-time";
+  time.textContent = relTime(s.last_active_at);
+  meta.append(video, time);
+
+  li.append(title, meta);
+  li.addEventListener("click", () => openSession(s.id));
+  return li;
+}
+
+function highlightActiveTrayItem() {
+  for (const li of trayList.querySelectorAll(".tray-item")) {
+    li.classList.toggle("active", li.dataset.sessionId === chatSessionId);
+  }
+}
+
+// Groups today/yesterday/older by *local* calendar day, comparing against
+// each session's last_active_at (already sorted newest-first by the API).
+function groupByRecency(sessions) {
+  const startOfDay = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const today = startOfDay(new Date());
+  const yesterday = today - 24 * 60 * 60 * 1000;
+
+  const groups = { Today: [], Yesterday: [], Older: [] };
+  for (const s of sessions) {
+    const day = startOfDay(new Date(s.last_active_at));
+    if (day === today) groups.Today.push(s);
+    else if (day === yesterday) groups.Yesterday.push(s);
+    else groups.Older.push(s);
+  }
+  return Object.entries(groups);
+}
+
+function relTime(iso) {
+  const diffMs = Date.now() - new Date(iso).getTime();
+  const mins = Math.round(diffMs / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.round(hours / 24);
+  return `${days}d ago`;
+}
+
+// Opens a past session: fetches its full transcript, switches the picker
+// to that session's movie if it's not the one currently loaded (a session
+// is pinned to one video server-side, see PLAN.md feature priority #6),
+// then replays every message into #chat-log via the same renderers the
+// live chat uses, so a reopened chat looks identical to how it streamed
+// in originally (minus the tool-call chips - only citations/trace are
+// persisted, see GET /api/sessions/{id} in main.py).
+async function openSession(sessionId) {
+  let session;
+  try {
+    session = await fetch(`/api/sessions/${sessionId}`).then((r) => {
+      if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+      return r.json();
+    });
+  } catch (err) {
+    alert(`Couldn't open chat: ${err.message}`);
+    return;
+  }
+
+  if (session.video_slug && (!currentVideo || currentVideo.slug !== session.video_slug)) {
+    await loadVideo(session.video_slug);
+  }
+
+  chatSessionId = session.id;
+  chatLog.innerHTML = "";
+  for (const m of session.messages) {
+    if (m.role === "user") {
+      appendChatEntry("user", m.content);
+    } else {
+      const entry = appendAgentEntry();
+      finalizeAgentReply(entry, { answer: m.content, citations: m.citations, trace: [] });
+    }
+  }
+  closeTray();
+}
+
+if (localStorage.getItem("chat-tray-open") === "1") openTray();

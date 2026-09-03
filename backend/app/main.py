@@ -308,6 +308,37 @@ async def chat_stream(body: ChatRequest, current_user: str = Depends(get_current
     )
 
 
+@app.get("/api/sessions")
+async def list_sessions(
+    video_slug: str | None = None, current_user: str = Depends(get_current_user)
+):
+    """For the chat tray: this user's own past sessions - never anyone
+    else's, see queries.list_sessions / get_session's docstrings. Pass
+    video_slug to scope to just the currently-picked movie; omit it for
+    every chat this user has ever had, across movies."""
+    pool = await get_pool()
+    video_id = None
+    if video_slug:
+        video = await queries.get_video_by_slug(pool, video_slug)
+        if video is None:
+            raise HTTPException(404, "video not found")
+        video_id = video["id"]
+    rows = await queries.list_sessions(pool, current_user, video_id)
+    return [
+        {
+            "id": str(r["id"]),
+            "title": r["title"],
+            "video_id": r["video_id"],
+            "video_title": r["video_title"],
+            "video_slug": r["video_slug"],
+            "message_count": r["message_count"],
+            "created_at": r["created_at"],
+            "last_active_at": r["last_active_at"],
+        }
+        for r in rows
+    ]
+
+
 @app.get("/api/sessions/{session_id}")
 async def get_session_transcript(session_id: str, current_user: str = Depends(get_current_user)):
     pool = await get_pool()
@@ -315,9 +346,12 @@ async def get_session_transcript(session_id: str, current_user: str = Depends(ge
     if session is None:
         raise HTTPException(404, "session not found")
     messages = await queries.list_messages(pool, session_id)
+    video = await queries.get_video_by_id(pool, session["video_id"]) if session["video_id"] else None
     return {
         "id": str(session["id"]),
+        "title": session["title"],
         "video_id": session["video_id"],
+        "video_slug": video["slug"] if video else None,
         "created_at": session["created_at"],
         "last_active_at": session["last_active_at"],
         "messages": [

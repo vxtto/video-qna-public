@@ -27,7 +27,13 @@
     </section>
 
     <section class="chat-pane">
-      <h2>agent <span class="tag">test console</span></h2>
+      <div class="chat-pane-header">
+        <h2>agent <span class="tag">test console</span></h2>
+        <div class="chat-controls">
+          <button id="tray-toggle" type="button" title="Chat history">🕘 Chats</button>
+          <button id="new-chat-btn" type="button" title="Start a new chat">+ New chat</button>
+        </div>
+      </div>
       <ol id="chat-log"></ol>
       <form id="chat-form">
         <input id="chat-input" type="text" placeholder="Ask about this video..." autocomplete="off" />
@@ -35,6 +41,15 @@
       </form>
     </section>
   </main>
+
+  <div id="tray-backdrop" class="tray-backdrop" hidden></div>
+  <aside id="chat-tray" class="chat-tray" hidden>
+    <div class="chat-tray-header">
+      <h3>Chats</h3>
+      <button id="tray-close" type="button" aria-label="Close chat history">✕</button>
+    </div>
+    <ol id="tray-list" class="tray-list"></ol>
+  </aside>
 
   <script src="/app.js"></script>
 </body>

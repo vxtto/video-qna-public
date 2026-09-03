@@ -389,6 +389,38 @@ async def get_session(db: asyncpg.Pool, session_id: str, owner: str) -> asyncpg.
     )
 
 
+async def list_sessions(
+    db: asyncpg.Pool, owner: str, video_id: int | None = None, limit: int = 50
+) -> list[asyncpg.Record]:
+    """For the chat tray: this user's sessions, newest-active-first. Scoped
+    to `owner` (never cross-user - see get_session's docstring for why),
+    optionally further scoped to one video.
+
+    Excludes sessions with zero messages: `_resolve_session` (main.py)
+    creates the session row *before* calling the agent, so a turn that
+    blows up before `record_turn` persists anything (bad API key, agent
+    crash, etc - confirmed live 2026-09-03 testing against a dummy
+    OPENROUTER_API_KEY) leaves a title-less, message-less orphan. Without
+    this filter every failed first message would permanently clutter the
+    tray with an "(untitled chat)" row that has nothing to open."""
+    return await db.fetch(
+        """
+        SELECT s.id, s.title, s.video_id, v.title AS video_title, v.slug AS video_slug,
+               s.created_at, s.last_active_at,
+               (SELECT count(*) FROM messages m WHERE m.session_id = s.id) AS message_count
+        FROM sessions s
+        LEFT JOIN videos v ON v.id = s.video_id
+        WHERE s.owner = $1 AND ($2::integer IS NULL OR s.video_id = $2)
+          AND EXISTS (SELECT 1 FROM messages m WHERE m.session_id = s.id)
+        ORDER BY s.last_active_at DESC
+        LIMIT $3
+        """,
+        owner,
+        video_id,
+        limit,
+    )
+
+
 async def list_messages(db: asyncpg.Pool, session_id: str) -> list[asyncpg.Record]:
     """Ordered oldest-first - both for replaying into the agent loop's
     `history` and for rendering a transcript. Left-joins `events` for the
@@ -473,9 +505,16 @@ async def record_turn(
                 usage.get("total_tokens"),
                 latency_ms,
             )
+            # title is COALESCE'd - only the session's first turn (the only
+            # time it's NULL) ever sets it, later turns leave it alone.
             await conn.execute(
-                "UPDATE sessions SET last_active_at = now() WHERE id = $1::uuid",
+                """
+                UPDATE sessions
+                SET last_active_at = now(), title = COALESCE(title, left($2, 60))
+                WHERE id = $1::uuid
+                """,
                 session_id,
+                user_message,
             )
     return {"message_id": assistant_msg["id"], "event_id": event["id"]}
 
