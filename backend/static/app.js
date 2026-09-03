@@ -1,6 +1,7 @@
 const picker = document.getElementById("video-picker");
 const player = document.getElementById("player");
 const segmentsEl = document.getElementById("segments");
+const chaptersEl = document.getElementById("chapters");
 const progressEl = document.getElementById("progress");
 const movieTitleEl = document.getElementById("movie-title");
 
@@ -37,6 +38,33 @@ async function loadVideo(slug) {
   movieTitleEl.textContent = video.title;
   player.src = `/media/${video.filename}`;
   renderSegments(video.segments);
+  renderChapters(video.chapters || []);
+}
+
+// Clickable chapter index (PLAN.md feature priority #2) - coarser
+// navigation than the transcript-pane segment list, same seek-on-click
+// pattern as renderSegments.
+function renderChapters(chapters) {
+  chaptersEl.innerHTML = "";
+  for (const ch of chapters) {
+    const li = document.createElement("li");
+    li.className = "chapter";
+
+    const ts = document.createElement("span");
+    ts.className = "ts";
+    ts.textContent = fmt(ch.start_ms);
+
+    const title = document.createElement("span");
+    title.className = "title";
+    title.textContent = ch.title;
+
+    li.append(ts, title);
+    li.onclick = () => {
+      player.currentTime = ch.start_ms / 1000;
+      player.play();
+    };
+    chaptersEl.appendChild(li);
+  }
 }
 
 function renderSegments(segments) {

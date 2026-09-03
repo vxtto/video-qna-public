@@ -75,7 +75,12 @@ async def get_video(slug: str):
     if video is None:
         raise HTTPException(404, "video not found")
     segments = await queries.list_segments(pool, video["id"])
-    return {**dict(video), "segments": [dict(s) for s in segments]}
+    chapters = await queries.list_chapters(pool, video["id"])
+    return {
+        **dict(video),
+        "segments": [dict(s) for s in segments],
+        "chapters": [dict(c) for c in chapters],
+    }
 
 
 @app.patch("/api/segments/{segment_id}")

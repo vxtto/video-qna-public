@@ -15,12 +15,24 @@ a second place to hand-edit the schema.
 
 ```mermaid
 erDiagram
+    videos ||--o{ chapters : "video_id"
     messages ||--o{ events : "message_id"
     sessions ||--o{ events : "session_id"
     videos ||--o{ events : "video_id"
     sessions ||--o{ messages : "session_id"
     videos ||--o{ sessions : "video_id"
     videos ||--o{ transcript_segments : "video_id"
+    chapters {
+        int id "PK"
+        int video_id
+        int seq
+        text title
+        text summary
+        int start_ms
+        int end_ms
+        vector4096 embedding
+        timestamptz created_at
+    }
     events {
         int id "PK"
         uuid session_id
@@ -74,6 +86,26 @@ erDiagram
 ```
 
 ## Tables
+
+### `chapters`
+
+| Column | Type | Nullable | Default | Notes |
+|---|---|---|---|---|
+| `id` | `integer` | no | `nextval('chapters_id_seq'::regclass)` | PK |
+| `video_id` | `integer` | no | — | FK → `videos.id` (ON DELETE CASCADE) |
+| `seq` | `integer` | no | — | — |
+| `title` | `text` | no | — | — |
+| `summary` | `text` | no | — | — |
+| `start_ms` | `integer` | no | — | — |
+| `end_ms` | `integer` | no | — | — |
+| `embedding` | `vector(4096)` | yes | — | — |
+| `created_at` | `timestamp with time zone` | no | `now()` | — |
+
+Unique constraints: `(video_id, seq)`
+
+Indexes:
+- `CREATE UNIQUE INDEX chapters_video_id_seq_key ON public.chapters USING btree (video_id, seq)`
+- `CREATE INDEX idx_chapters_video_start ON public.chapters USING btree (video_id, start_ms)`
 
 ### `events`
 
