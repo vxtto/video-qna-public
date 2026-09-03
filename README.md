@@ -87,12 +87,24 @@ a time.
 
 First boot auto-seeds Postgres from `data/media/transcripts/*.json` (see
 [`backend/app/seed.py`](backend/app/seed.py)) if the `videos` table is
-empty. Then backfill embeddings once (needed for `semantic_search` — the
-agent degrades to keyword-only retrieval without it):
+empty. Auto-seed only covers `videos`/`transcript_segments`, though — two
+more one-time steps, neither auto-run (same reasoning as embeddings below:
+real API calls/cost, shouldn't fire silently on every container start):
 
 ```bash
-docker compose exec api python -m app.embed_segments
+docker compose exec api python -m app.embed_segments      # needed for semantic_search -
+                                                            # the agent degrades to keyword-
+                                                            # only retrieval without it
+docker compose exec api python -m app.generate_chapters    # needed for the chapter index -
+                                                            # UI/search_chapters silently show
+                                                            # nothing without it, no error
 ```
+
+Order between those two doesn't matter (independent tables/columns), but
+both need `transcript_segments` to already be seeded first. This bit
+production for real once already (chapters table existed but stayed empty
+after a deploy — see `docs/STATUS.md`, 2026-09-03) — the same gap applies
+to any fresh worktree.
 
 To re-seed after editing `seed.py`'s `MANIFEST` (idempotent, safe to
 re-run):
