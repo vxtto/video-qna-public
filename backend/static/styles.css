@@ -480,6 +480,15 @@ main {
   z-index: 40;
 }
 
+/* [hidden] first so the author rule below can't win a same-specificity
+   tie against it - `display: flex` on .chat-tray would otherwise beat the
+   UA's `[hidden] { display: none }` (author stylesheets always outrank
+   user-agent ones), leaving the tray visually open with hidden=true set -
+   exactly what made the close/toggle buttons look like no-ops. */
+.chat-tray[hidden] {
+  display: none;
+}
+
 .chat-tray {
   position: fixed;
   top: 0;
