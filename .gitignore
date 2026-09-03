@@ -5,5 +5,8 @@ data/
 *.webm
 *.wav
 *.srt
+# Except the tiny synthetic e2e fixture clips (tracked via git-lfs, see
+# .gitattributes) — everything else under data/ is real, gitignored media.
+!e2e/fixtures/*.mp4
 __pycache__/
 *.pyc
