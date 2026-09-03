@@ -15,7 +15,16 @@ services:
       # Parameterized so parallel worktrees on one box don't fight over the
       # same host port — see scripts/dev-up.sh, which self-assigns free
       # ports into each worktree's own gitignored .env on first run.
-      - "127.0.0.1:${DB_PORT:-5432}:5432"
+      #
+      # Required, not defaulted: a silent `:-5432` fallback is exactly what
+      # let a bare `docker compose up` (bypassing dev-up.sh) rebind this
+      # worktree onto the wrong port with the wrong media mount, unnoticed,
+      # on 2026-09-03 (see docs/STATUS.md) — video playback silently broke
+      # because nothing failed loudly. CI and deploy.yml both set these
+      # directly now (job env / an inline `export` before the compose
+      # call, see DEPLOY.md's "CI/CD") rather than via any .env file —
+      # single fixed instance on the VPS, no per-worktree collision risk.
+      - "127.0.0.1:${DB_PORT:?run ./scripts/dev-up.sh instead of docker compose directly - see PLAN.md}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
       interval: 5s
@@ -56,7 +65,8 @@ services:
       # into this file. Public access goes through Caddy's reverse proxy
       # + oauth2-proxy, not this port directly; don't widen it back to
       # 0.0.0.0 without re-adding that intentionally.
-      - "127.0.0.1:${API_PORT:-8000}:8000"
+      # Required, not defaulted - same reasoning as DB_PORT above.
+      - "127.0.0.1:${API_PORT:?run ./scripts/dev-up.sh instead of docker compose directly - see PLAN.md}:8000"
 
   # Reverse proxy + GitHub OAuth — VPS/prod only. Gated behind the "prod"
   # profile so plain `docker compose up` (every local worktree's command)
