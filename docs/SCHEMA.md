@@ -60,6 +60,8 @@ erDiagram
         int video_id
         timestamptz created_at
         timestamptz last_active_at
+        text owner
+        text title
     }
     transcript_segments {
         int id "PK"
@@ -156,6 +158,11 @@ Indexes:
 | `video_id` | `integer` | yes | — | FK → `videos.id` (ON DELETE SET NULL) |
 | `created_at` | `timestamp with time zone` | no | `now()` | — |
 | `last_active_at` | `timestamp with time zone` | no | `now()` | — |
+| `owner` | `text` | no | `'vxtto'::text` | — |
+| `title` | `text` | yes | — | — |
+
+Indexes:
+- `CREATE INDEX idx_sessions_owner ON public.sessions USING btree (owner, last_active_at DESC)`
 
 ### `transcript_segments`
 
