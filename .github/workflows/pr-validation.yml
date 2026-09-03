@@ -160,6 +160,11 @@ jobs:
     continue-on-error: true
     env:
       OPENROUTER_API_KEY: ci-dummy-key-not-a-real-secret
+      # DB_PORT/API_PORT became required (no silent default) in
+      # docker-compose.yml on 2026-09-03 - see compose-smoke's identical env
+      # block above for why.
+      DB_PORT: "5432"
+      API_PORT: "8000"
     steps:
       - uses: actions/checkout@v4
         with:
