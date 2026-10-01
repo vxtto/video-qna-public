@@ -1,8 +1,6 @@
 name: PR validation
 
-# Required check for merging to main (see branch protection settings).
-# This is the gate the deploy workflow (deploy.yml) trusts: passing here is
-# what makes a merge to main eligible to go out.
+# Required check for merging to main.
 #
 # `tests` (pytest, unit + integration) is a required check alongside lint/
 # docker-build/migrations/compose-smoke. `e2e` (Playwright, real browser)
@@ -87,11 +85,6 @@ jobs:
       # Job-level, not step-level — docker compose down (teardown step)
       # needs to re-interpolate this too, not just the up step.
       OPENROUTER_API_KEY: ci-dummy-key-not-a-real-secret
-      # DB_PORT/API_PORT became required (no silent default) in
-      # docker-compose.yml on 2026-09-03 to force local dev through
-      # scripts/dev-up.sh — CI has no worktree/.env, so it needs these
-      # supplied directly. Single throwaway instance, no collision risk,
-      # so the plain defaults are fine here.
       DB_PORT: "5432"
       API_PORT: "8000"
     steps:
@@ -135,11 +128,6 @@ jobs:
           --health-retries 10
     steps:
       - uses: actions/checkout@v4
-        with:
-          # test_media_range.py reads e2e/fixtures/sample_clip.mp4 (git-lfs)
-          # for the Range-request tests - a plain checkout would only get
-          # the pointer file.
-          lfs: true
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -160,15 +148,10 @@ jobs:
     continue-on-error: true
     env:
       OPENROUTER_API_KEY: ci-dummy-key-not-a-real-secret
-      # DB_PORT/API_PORT became required (no silent default) in
-      # docker-compose.yml on 2026-09-03 - see compose-smoke's identical env
-      # block above for why.
       DB_PORT: "5432"
       API_PORT: "8000"
     steps:
       - uses: actions/checkout@v4
-        with:
-          lfs: true # needed for e2e/fixtures/sample_clip.mp4
       - name: Seed the fixture video into the compose media mount
         run: |
           mkdir -p data/media/raw

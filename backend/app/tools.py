@@ -1,15 +1,15 @@
-"""The agent's tools (CLAUDE.md risk #3: several real tools, not one, so
+"""The agent's tools (several real tools, not one, so
 tool choice is genuinely load-bearing — who-says-X routes to keyword,
 thematic questions route to semantic, what-happens-after-T routes to
 fetch_window, high-level/outline questions route to search_chapters).
-Also the `final_answer` tool that structurally enforces citations
-(risk #7): the model must call it to finish, it can't just emit free text
+Also the `final_answer` tool that structurally enforces citations:
+the model must call it to finish, it can't just emit free text
 with timestamps sprinkled in.
 
 Transcript-facing tools (semantic_search, keyword_search, fetch_window)
 are the grounding layer — every final_answer citation must point at a
 transcript_segments row one of these returned. search_chapters is a
-separate, coarser layer (PLAN.md feature priority #2) for navigation and
+separate, coarser layer for navigation and
 high-level retrieval only ("what's this act about") — it is never itself
 a citation source.
 

@@ -1,6 +1,5 @@
 """Local REPL for testing the agent loop end-to-end against a running
-Postgres (docker compose up db) before wiring it into the FastAPI app or
-touching the VPS at all.
+Postgres (docker compose up db), without going through the FastAPI app.
 
     docker compose up -d db
     docker compose exec api python -m app.embed_segments   # once, after seeding

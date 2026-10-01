@@ -1,5 +1,4 @@
-"""Regression tests for real, live-observed bugs (see
-memory/no-test-suite-openrouter-failure-handling) - not hypothetical edge
+"""Regression tests for real, live-observed bugs - not hypothetical edge
 cases. Both were reproduced against a running deployment before any test
 existed:
 

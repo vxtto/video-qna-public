@@ -1,7 +1,7 @@
 """Thin OpenRouter client. Both the embedding model (qwen3-embedding-8b)
 and the agent LLM (DeepSeek V4 Flash) are OpenAI-compatible endpoints on
-the same provider/key, per CLAUDE.md — this project uses one API key for
-everything, same as the transcription step in video-processing.
+the same provider/key — this project uses one API key for everything,
+including the Whisper transcription step.
 """
 
 from __future__ import annotations
@@ -19,10 +19,9 @@ log = logging.getLogger("openrouter")
 BASE_URL = "https://openrouter.ai/api/v1"
 
 # OpenRouter routes DeepSeek calls across Groq/DeepInfra/Together under the
-# hood (see PLAN.md) - a transient backend-routing disconnect is an expected
+# hood - a transient backend-routing disconnect is an expected
 # condition of this provider setup, not a rare fluke (reproduced twice, both
-# RemoteProtocolError and ConnectError, in one short live session - see
-# memory/no-test-suite-openrouter-failure-handling). One retry with a short
+# RemoteProtocolError and ConnectError, in one short live session). One retry with a short
 # backoff catches most of those without hiding a genuine outage.
 _TRANSIENT_ERRORS = (httpx.RemoteProtocolError, httpx.ConnectError, httpx.ReadTimeout)
 _MAX_ATTEMPTS = 2
@@ -69,8 +68,7 @@ async def chat(
     """One DeepSeek chat-completions call. Returns the raw `message` object
     (may contain `tool_calls` or plain `content`).
 
-    `response_format` is DeepSeek's structured-outputs param (JSON schema,
-    per CLAUDE.md's core stack decisions) — used by app/generate_chapters.py
+    `response_format` is DeepSeek's structured-outputs param (JSON schema) — used by app/generate_chapters.py
     for a plain (no tool-calling) call that must come back as strict JSON,
     mutually exclusive with `tools` in practice (nothing here needs both)."""
     body: dict = {"model": model or LLM_MODEL, "messages": messages}
@@ -113,7 +111,7 @@ async def chat_stream(
     tool_choice: str | dict | None = None,
     model: str | None = None,
 ) -> AsyncIterator[dict]:
-    """Streamed variant of `chat()`, for feature/streaming-chat-responses.
+    """Streamed variant of `chat()`.
     Yields the raw OpenAI-compatible SSE chunk objects
     (`{"choices": [{"delta": {...}, "finish_reason": ...}], ...}`) as they
     arrive, plus a final usage-only chunk (`stream_options.include_usage`).
@@ -156,8 +154,7 @@ async def chat_stream(
             # once we've yielded partial content, a transparent retry would
             # replay/duplicate it. A mid-stream drop after that point still
             # propagates immediately, same as before (main.py's caller
-            # persists what it has and surfaces a clean error - see
-            # memory/no-test-suite-openrouter-failure-handling).
+            # persists what it has and surfaces a clean error).
             if yielded_any or attempt == _MAX_ATTEMPTS:
                 raise
             log.warning(

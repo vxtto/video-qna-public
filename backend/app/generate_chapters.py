@@ -5,9 +5,8 @@ and can run before or after `app.embed_segments` — independent tables.
     docker compose exec api python -m app.generate_chapters
     # or locally: DATABASE_URL=... OPENROUTER_API_KEY=... python -m app.generate_chapters
 
-Source: one LLM pass over each video's full transcript (PLAN.md feature
-priority #2 — cheap, same DeepSeek call pattern the agent loop already
-uses; a 2hr transcript is ~10-25k tokens per PLAN.md risk #1, trivially
+Source: one LLM pass over each video's full transcript (cheap, same DeepSeek call pattern the agent loop already
+uses; a 2hr transcript is ~10-25k tokens, trivially
 fits in one call, no chunking needed at this corpus size). Deliberately
 NOT scene-detection on the raw video — overkill for talking-heads content.
 

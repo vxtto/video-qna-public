@@ -42,7 +42,7 @@ def test_chat_continues_existing_session_with_history(client, monkeypatch):
     assert second.json()["session_id"] == session_id
     # The second call's history must include the first turn's user+assistant
     # messages - this is the "prior turns replayed into the agent loop" the
-    # session feature promises (PLAN.md priority #6).
+    # session feature promises.
     second_call_messages = seen_messages[1]
     roles_and_content = [(m["role"], m.get("content")) for m in second_call_messages]
     assert ("user", "first question") in roles_and_content

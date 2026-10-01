@@ -1,5 +1,5 @@
 """All hand-written SQL for this project, in one place, grouped by
-resource. No ORM — see CLAUDE.md's ORM decision: the real queries here
+resource. No ORM: the real queries here
 (pgvector cosine distance, Postgres full-text ranking, RRF fusion) are
 Postgres-specific enough that an ORM would just add ceremony around
 `.execute(text(...))` anyway. `db.py` owns the connection pool; this module
@@ -181,7 +181,7 @@ def _vector_literal(embedding: list[float]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# retrieval — the three agent tools (CLAUDE.md risk #3)
+# retrieval — the three agent tools
 # ---------------------------------------------------------------------------
 
 
@@ -192,8 +192,8 @@ async def semantic_search(
     video_id: int | None = None,
     k: int = 8,
 ) -> list[asyncpg.Record]:
-    """Exact nearest-neighbor scan by cosine distance. No ANN index — see
-    CLAUDE.md risk #8: at a few hundred chunks, exact scan is instant and
+    """Exact nearest-neighbor scan by cosine distance. No ANN index:
+    at a few hundred chunks, exact scan is instant and
     pgvector's ivfflat/HNSW index cap (2000 dims) wouldn't fit our 4096-dim
     embeddings anyway."""
     return await db.fetch(
@@ -273,11 +273,11 @@ async def fetch_window(
 
 
 # ---------------------------------------------------------------------------
-# chapters (PLAN.md feature priority #2) — a coarser, navigational layer
+# chapters — a coarser, navigational layer
 # sibling to transcript_segments. Queried separately (own table, own
 # embedding column) from transcripts: chapters are for high-level
 # retrieval/navigation, transcript_segments stay the only thing
-# final_answer ever cites. See CLAUDE.md / db/migrations/0004_chapters.sql.
+# final_answer ever cites. See db/migrations/0004_chapters.sql.
 # ---------------------------------------------------------------------------
 
 
@@ -363,7 +363,7 @@ async def search_chapters(
 
 
 # ---------------------------------------------------------------------------
-# sessions / messages / events (PLAN.md feature priority #6)
+# sessions / messages / events
 # ---------------------------------------------------------------------------
 
 
@@ -522,7 +522,7 @@ async def record_turn(
 async def record_failed_turn(db: asyncpg.Pool, *, session_id: str, user_message: str) -> None:
     """Persists just the user's message when the agent loop/model call fails
     before `record_turn` can run - the fix for the "message vanishes
-    silently" regression (memory/no-test-suite-openrouter-failure-handling):
+    silently" regression:
     a mid-turn OpenRouter drop used to mean the user's question was never
     saved, even though the user believes they asked something. No assistant
     message/event row is written here - there's no answer to attach one to."""

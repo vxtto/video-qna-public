@@ -1,8 +1,8 @@
 name: gitleaks
 
-# Server-side backstop for the pre-commit hook (see PLAN.md "Secrets
-# management"): catches anything pushed from a worktree where the hook
-# wasn't installed, or committed with --no-verify.
+# Server-side backstop for the gitleaks pre-commit hook: catches anything
+# pushed from a checkout where the hook wasn't installed, or committed with
+# --no-verify.
 
 on:
   push:

@@ -1,9 +1,6 @@
-"""Placeholder FastAPI service: watch a movie in the browser and review
-whether its Whisper transcript is correct, segment by segment.
-
-Not the real Q&A backend yet (see repo CLAUDE.md) — this is the smallest
-thing that lets a human confirm transcript quality before it's trusted for
-retrieval.
+"""FastAPI service: video + transcript metadata, transcript review,
+Range-request media streaming, and the chat endpoints that run the agent
+loop (app/agent.py) with server-side sessions.
 """
 
 from __future__ import annotations
@@ -42,12 +39,12 @@ async def lifespan(app: FastAPI):
         try:
             await seed_main()
         except Exception:
-            log.exception("seed failed (placeholder app, continuing without data)")
+            log.exception("seed failed, continuing without data")
     yield
     await close_pool()
 
 
-app = FastAPI(title="video-qna placeholder", lifespan=lifespan)
+app = FastAPI(title="video-qna", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -101,7 +98,7 @@ class ChatRequest(BaseModel):
     message: str
     video_slug: str | None = None
     # Omit to start a new session; pass one back to continue a
-    # conversation - see PLAN.md feature priority #6.
+    # conversation.
     session_id: uuid.UUID | None = None
 
 
@@ -137,10 +134,10 @@ async def _resolve_session(
 @app.post("/api/chat")
 async def chat(body: ChatRequest, current_user: str = Depends(get_current_user)):
     """Wires the bare agent loop (app/agent.py) into the API, now with
-    server-side session storage (PLAN.md feature priority #6): every turn
+    server-side session storage: every turn
     is persisted as a `messages` row pair + an `events` analytics row, and
     prior turns in the same session are replayed into the agent loop as
-    history. Still no trim/summarize policy (priority #5) - the full
+    history. Still no trim/summarize policy - the full
     history is replayed every turn.
 
     One-shot: the client gets nothing until the whole turn (every tool
@@ -156,7 +153,7 @@ async def chat(body: ChatRequest, current_user: str = Depends(get_current_user))
     try:
         result = await agent.run(pool, body.message, video_id=video_id, history=history)
     except Exception:
-        # Regression guard (memory/no-test-suite-openrouter-failure-handling):
+        # Regression guard:
         # an OpenRouter transport failure mid-agent-loop (e.g.
         # httpx.RemoteProtocolError, reproduced live) used to propagate as a
         # bare unhandled 500 with a full stack trace, and the user's message
@@ -262,7 +259,7 @@ async def chat_stream(body: ChatRequest, current_user: str = Depends(get_current
                     usage = event["usage"]
         except Exception as exc:  # noqa: BLE001 - surface to the client, not a 500 mid-stream
             log.exception("chat stream failed")
-            # Regression guard (memory/no-test-suite-openrouter-failure-handling):
+            # Regression guard:
             # record_turn only runs after the try block succeeds, so a
             # mid-stream OpenRouter drop used to mean the user's message was
             # never persisted - silently vanishing from history even though
@@ -302,7 +299,7 @@ async def chat_stream(body: ChatRequest, current_user: str = Depends(get_current
         headers={
             "cache-control": "no-cache",
             # nginx/proxy buffering would otherwise batch chunks and defeat
-            # the whole point (see DEPLOY.md for what fronts this in prod).
+            # the whole point when a reverse proxy fronts this.
             "x-accel-buffering": "no",
         },
     )
@@ -392,7 +389,7 @@ async def stream_media(filename: str, request: Request):
 
     Starlette's StaticFiles/FileResponse does NOT implement Range requests
     (confirmed against starlette 0.38 — it always returns the full body
-    with a 200), and per CLAUDE.md risk #7 seeking breaks without it. So
+    with a 200), and <video> seeking breaks without it. So
     this is hand-rolled: a bad Range header degrades to a full 200 response
     rather than erroring, since some HTTP clients omit Range entirely.
     """
@@ -444,6 +441,5 @@ def _iterfile(path: Path, start: int, end: int):
             remaining -= len(chunk)
             yield chunk
 
-# Frontend placeholder — plain HTML/JS, no build step (see CLAUDE.md: never
-# run a Node dev server in production; this keeps dev/prod identical).
+# Frontend — plain HTML/JS, no build step, so dev and prod are identical.
 app.mount("/", StaticFiles(directory="static", html=True), name="static")

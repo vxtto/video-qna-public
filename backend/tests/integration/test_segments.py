@@ -1,6 +1,5 @@
 """GET /api/videos, GET /api/videos/{slug}, PATCH /api/segments/{id} -
-the transcript-review placeholder app's own endpoints (see main.py's
-module docstring)."""
+the video/transcript-review endpoints."""
 
 
 async def test_list_videos_includes_counts(client, seeded_video):

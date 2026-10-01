@@ -1,8 +1,7 @@
-"""Load the ad-hoc pipeline output (data/raw/*.mp4 + data/transcripts/*.json
-from the video-processing worktree) into Postgres.
+"""Load the transcription output (data/media/raw/*.mp4 +
+data/media/transcripts/*.json) into Postgres.
 
-Placeholder for the real ingest pipeline described in CLAUDE.md — good
-enough to get one movie watchable + reviewable. Each transcript chunk file
+Each transcript chunk file
 covers CHUNK_SECONDS of the video starting at chunk_index * CHUNK_SECONDS;
 segment timestamps inside a chunk are relative to the chunk, so we offset
 them to get a timeline for the whole video.
@@ -43,8 +42,6 @@ MANIFEST = [
         "transcript_prefix": "cos",
     },
 ]
-# Sita Sings the Blues / His Girl Friday not yet through the video-processing
-# pipeline — see ../../PLAN.md's "Known risks" #6 for corpus status.
 
 CHUNK_RE = re.compile(r"_(\d+)\.json$")
 
@@ -101,7 +98,7 @@ async def main() -> None:
         video_path = MEDIA_ROOT / "raw" / entry["filename"]
         if not video_path.exists():
             log.warning(
-                "video file missing (%s) — is ../video-processing mounted at %s?",
+                "video file missing (%s) — is data/media mounted at %s?",
                 video_path,
                 MEDIA_ROOT,
             )

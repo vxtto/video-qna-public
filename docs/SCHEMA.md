@@ -158,7 +158,7 @@ Indexes:
 | `video_id` | `integer` | yes | — | FK → `videos.id` (ON DELETE SET NULL) |
 | `created_at` | `timestamp with time zone` | no | `now()` | — |
 | `last_active_at` | `timestamp with time zone` | no | `now()` | — |
-| `owner` | `text` | no | `'vxtto'::text` | — |
+| `owner` | `text` | no | `'dev'::text` | — |
 | `title` | `text` | yes | — | — |
 
 Indexes:

@@ -1,10 +1,9 @@
-"""Hand-rolled Hermes-style agent loop (CLAUDE.md: modeled on Nous
-Research's Hermes harness, core loop only — model call -> tool dispatch ->
-append result -> repeat until final response, no skills system / sub-agents
-/ scheduling).
+"""Hand-rolled agent loop, modeled on Nous Research's Hermes harness (core
+loop only): model call -> tool dispatch -> append result -> repeat until
+the model calls final_answer.
 
-Deliberately small and linear so it's easy to explain in an interview:
-this whole module is the agent, no framework underneath.
+Deliberately small and linear: this whole module is the agent, no
+framework underneath.
 """
 
 from __future__ import annotations
@@ -100,7 +99,7 @@ class AgentResult:
         self.trace = trace  # list of {tool, args, result} for debugging/analytics
         # Summed prompt/completion/total tokens across every model call this
         # turn made (can be >1 - each tool round-trip is its own call). Used
-        # for the per-turn analytics event, see PLAN.md feature priority #6.
+        # for the per-turn analytics event.
         self.usage = usage or {}
 
 
@@ -118,9 +117,8 @@ async def run(
     `video_id`, if given, scopes semantic_search/keyword_search to one
     video (the default for a single-video "watch page" chat). `history` is
     prior turns' messages (already OpenAI-shaped) for multi-turn sessions;
-    context-management policy (trim/summarize per CLAUDE.md risk #2) is
-    intentionally NOT in this bare loop yet - out of scope for the local
-    functionality test, see CLAUDE.md open questions.
+    there is no context-management policy (trim/summarize) yet - the full
+    history is replayed every turn.
     """
     active_video = await queries.get_video_by_id(db, video_id) if video_id else None
     messages: list[dict] = [{"role": "system", "content": _build_system_prompt(active_video)}]
@@ -250,7 +248,7 @@ async def run_stream(
     video_id: int | None = None,
     history: list[dict] | None = None,
 ) -> AsyncIterator[dict]:
-    """Streaming twin of `run()`, for feature/streaming-chat-responses.
+    """Streaming twin of `run()`.
 
     Same tool loop, same grounding contract, but yields events as they
     happen instead of returning one `AgentResult` at the end:
@@ -266,8 +264,7 @@ async def run_stream(
 
     `call_id` (the model API's tool_call id) lets a caller correlate a
     `tool_result` back to the `tool_call` that started it - e.g. the
-    frontend's live tool-call chips (PLAN.md/feature "tool calls rendered
-    in real time"), which render one chip per call_id and flip it from
+    frontend's live tool-call chips, which render one chip per call_id and flip it from
     pending to done/error as its result arrives.
 
     The tool-call turns (semantic_search/keyword_search/fetch_window)

@@ -6,7 +6,7 @@ import { test, expect } from "@playwright/test";
 // available - so it's kept to exactly the two things that actually need a
 // live <video> element and real DOM events: the transcript click-to-seek
 // wiring, and the chat-citation click-to-seek wiring. Everything about
-// answer *quality* is out of scope here (see PLAN.md's eval-harness item).
+// answer *quality* is out of scope here.
 //
 // Requires the app stack running with the fixture video seeded - see
 // e2e/README.md for how CI/local runs bring that up first.
@@ -56,8 +56,7 @@ test("clicking a chat citation timestamp seeks the player", async ({ page }) => 
   const videoId = videos[0].id;
 
   // Mock the chat backend with a canned SSE response - this test is about
-  // the frontend's click-to-seek wiring, not agent/LLM quality (that's the
-  // separate eval harness, PLAN.md #4), so no real OpenRouter call happens
+  // the frontend's click-to-seek wiring, not agent/LLM quality so no real OpenRouter call happens
   // and the result is fully deterministic.
   await page.route("**/api/chat/stream", async (route) => {
     const body =

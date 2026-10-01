@@ -1,9 +1,9 @@
 -- Adds what the real RAG retrieval path needs: a vector column for
--- semantic_search and a tsvector column for keyword_search. See
--- CLAUDE.md's retrieval section (hybrid search, RRF fusion).
+-- semantic_search and a tsvector column for keyword_search
+-- (hybrid search, RRF fusion).
 --
 -- Dimension: 4096, matching qwen/qwen3-embedding-8b's native output. No
--- ivfflat/HNSW index — per CLAUDE.md risk #8 we skip ANN indexing at this
+-- ivfflat/HNSW index — we skip ANN indexing at this
 -- corpus size (few hundred chunks, exact scan is instant); pgvector's
 -- 2000-dim index cap wouldn't fit 4096 anyway, which is one more reason
 -- exact scan is the right call here, not just corpus size.

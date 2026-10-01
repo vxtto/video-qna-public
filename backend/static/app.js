@@ -41,7 +41,7 @@ async function loadVideo(slug) {
   renderChapters(video.chapters || []);
 }
 
-// Clickable chapter index (PLAN.md feature priority #2) - coarser
+// Clickable chapter index - coarser
 // navigation than the transcript-pane segment list, same seek-on-click
 // pattern as renderSegments.
 function renderChapters(chapters) {
@@ -188,8 +188,8 @@ loadVideoList();
 // per call, see agent.run_stream's tool_call/tool_result events) *and*
 // streams the final answer in token-by-token, clickable citation
 // timestamps (seek the <video>), and the raw tool-call trace for
-// debugging. This backend has server-side sessions (PLAN.md feature
-// priority #6): the first call omits session_id and the response hands
+// debugging. This backend has server-side sessions:
+// the first call omits session_id and the response hands
 // one back, which subsequent calls replay so the agent sees real
 // conversation history instead of resetting every turn.
 
@@ -566,7 +566,7 @@ function relTime(iso) {
 
 // Opens a past session: fetches its full transcript, switches the picker
 // to that session's movie if it's not the one currently loaded (a session
-// is pinned to one video server-side, see PLAN.md feature priority #6),
+// is pinned to one video server-side),
 // then replays every message into #chat-log via the same renderers the
 // live chat uses, so a reopened chat looks identical to how it streamed
 // in originally (minus the tool-call chips - only citations/trace are

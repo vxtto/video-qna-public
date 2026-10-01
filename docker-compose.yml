@@ -12,19 +12,7 @@ services:
       # init of an empty volume only. Numbered so migration order is explicit.
       - ./db/migrations:/docker-entrypoint-initdb.d:ro
     ports:
-      # Parameterized so parallel worktrees on one box don't fight over the
-      # same host port — see scripts/dev-up.sh, which self-assigns free
-      # ports into each worktree's own gitignored .env on first run.
-      #
-      # Required, not defaulted: a silent `:-5432` fallback is exactly what
-      # let a bare `docker compose up` (bypassing dev-up.sh) rebind this
-      # worktree onto the wrong port with the wrong media mount, unnoticed,
-      # on 2026-09-03 (see docs/STATUS.md) — video playback silently broke
-      # because nothing failed loudly. CI and deploy.yml both set these
-      # directly now (job env / an inline `export` before the compose
-      # call, see DEPLOY.md's "CI/CD") rather than via any .env file —
-      # single fixed instance on the VPS, no per-worktree collision risk.
-      - "127.0.0.1:${DB_PORT:?run ./scripts/dev-up.sh instead of docker compose directly - see PLAN.md}:5432"
+      - "127.0.0.1:${DB_PORT:-5432}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
       interval: 5s
@@ -43,80 +31,12 @@ services:
       db:
         condition: service_healthy
     volumes:
-      # Curated movie files + transcript JSON, mounted read-only. This is
-      # NOT video-processing/data/ (that's the pipeline's full working
-      # directory — raw sources, audio, chunks, intermediate transcripts).
-      # Publish just the 480p mp4s + final transcript JSON here, e.g.:
-      #   cp video-processing/data/raw/*_480p.mp4 data/media/raw/
-      #   cp video-processing/data/transcripts/*.json data/media/transcripts/
-      # Matches the VPS layout exactly (/opt/video-qna/app/data/media) —
-      # see DEPLOY.md's media section.
-      #
-      # MEDIA_HOST_DIR lets multiple worktrees on one box point at ONE
-      # shared copy of these (multi-hundred-MB) files instead of each
-      # worktree duplicating them under its own ./data/media — set it in
-      # that worktree's .env. Defaults to the worktree-local path so a
-      # single-worktree setup needs no config. See PLAN.md's "A note on
-      # worktrees" / "Running several worktrees in parallel".
+      # 480p mp4s (data/media/raw/) + transcript JSON
+      # (data/media/transcripts/), mounted read-only.
       - ${MEDIA_HOST_DIR:-./data/media}:/data/media:ro
     ports:
-      # Bound to localhost only — matches the fix applied directly on the
-      # VPS on 2026-09-02 (see docs/STATUS.md) that had never made it back
-      # into this file. Public access goes through Caddy's reverse proxy
-      # + oauth2-proxy, not this port directly; don't widen it back to
-      # 0.0.0.0 without re-adding that intentionally.
-      # Required, not defaulted - same reasoning as DB_PORT above.
-      - "127.0.0.1:${API_PORT:?run ./scripts/dev-up.sh instead of docker compose directly - see PLAN.md}:8000"
-
-  # Reverse proxy + GitHub OAuth — VPS/prod only. Gated behind the "prod"
-  # profile so plain `docker compose up` (every local worktree's command)
-  # never tries to start a public reverse proxy + OAuth login on someone's
-  # laptop. The VPS deploy is the only caller that opts in, via
-  # `docker compose --profile prod up -d` (see .github/workflows/deploy.yml).
-  # Config lives in infra/caddy/ (Caddyfile, static placeholder site) —
-  # see DEPLOY.md's "What's deployed" for why it's split into its own
-  # directory but this one file.
-  caddy:
-    image: caddy:2-alpine
-    restart: unless-stopped
-    profiles: ["prod"]
-    ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"
-    volumes:
-      - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
-      - ./infra/caddy/site:/srv/site:ro
-      - caddy_data:/data
-      - caddy_config:/config
-    depends_on:
-      - oauth2-proxy
-      # `api` is deliberately not listed here even though Caddy proxies to
-      # it — same Compose project/network either way, and listing it would
-      # make `docker compose --profile prod up -d` try to (re)create `api`
-      # too on every Caddy-only change. Caddy resolves it by service name
-      # at request time regardless of start order.
-
-  oauth2-proxy:
-    image: quay.io/oauth2-proxy/oauth2-proxy:v7.6.0
-    restart: unless-stopped
-    profiles: ["prod"]
-    environment:
-      OAUTH2_PROXY_PROVIDER: github
-      OAUTH2_PROXY_GITHUB_USER: vxtto
-      OAUTH2_PROXY_CLIENT_ID: ${OAUTH2_PROXY_CLIENT_ID}
-      OAUTH2_PROXY_CLIENT_SECRET: ${OAUTH2_PROXY_CLIENT_SECRET}
-      OAUTH2_PROXY_COOKIE_SECRET: ${OAUTH2_PROXY_COOKIE_SECRET}
-      OAUTH2_PROXY_COOKIE_SECURE: "true"
-      OAUTH2_PROXY_EMAIL_DOMAINS: "*"
-      OAUTH2_PROXY_HTTP_ADDRESS: "0.0.0.0:4180"
-      OAUTH2_PROXY_UPSTREAMS: "static://200"
-      OAUTH2_PROXY_REDIRECT_URL: "https://example.com/oauth2/callback"
-      OAUTH2_PROXY_WHITELIST_DOMAINS: ".example.com"
-      OAUTH2_PROXY_COOKIE_DOMAINS: ".example.com"
-      OAUTH2_PROXY_SET_XAUTHREQUEST: "true"
+      # Localhost only: the app has no auth of its own (see app/auth.py).
+      - "127.0.0.1:${API_PORT:-8000}:8000"
 
 volumes:
   pgdata:
-  caddy_data:
-  caddy_config:

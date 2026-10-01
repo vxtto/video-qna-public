@@ -1,8 +1,8 @@
--- Content chaptering (PLAN.md feature priority #2): a coarser, named-scene
+-- Content chaptering: a coarser, named-scene
 -- layer sibling to transcript_segments, for navigation and high-level
 -- retrieval. Deliberately its own table with its own embedding column
 -- (not a column bolted onto transcript_segments) so transcripts and
--- chapters can be queried separately, per CLAUDE.md — chapters are for
+-- chapters can be queried separately — chapters are for
 -- outline/navigation, transcript_segments stay the only thing
 -- final_answer citations ever point at.
 --

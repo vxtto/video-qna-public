@@ -1,12 +1,11 @@
 .env
-data/
+data/media/raw/
 *.mp4
 *.mkv
 *.webm
 *.wav
 *.srt
-# Except the tiny synthetic e2e fixture clips (tracked via git-lfs, see
-# .gitattributes) — everything else under data/ is real, gitignored media.
+# Except the tiny synthetic e2e fixture clip.
 !e2e/fixtures/*.mp4
 __pycache__/
 *.pyc
