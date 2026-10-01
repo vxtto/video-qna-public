@@ -4,6 +4,8 @@ Ask a question about a film in plain English and get an answer grounded in
 its transcript, with `[MM:SS]` citations that seek the video player to the
 moment being quoted.
 
+![Asking a question and jumping to the cited moment](docs/demo.gif)
+
 A small RAG project: FastAPI, Postgres + pgvector, a hand-rolled agent loop,
 and a build-free HTML/JS frontend.
 
